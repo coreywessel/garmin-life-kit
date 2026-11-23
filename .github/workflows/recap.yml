@@ -1,0 +1,81 @@
+name: Recap
+
+# Morning and evening recap. The Cloudflare Worker starts it at the profile's local times
+# (GitHub's own schedule ran hours late). A manual run always sends; schedule and wake runs
+# stand down if today's recap already went out.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: morning or evening
+        type: choice
+        options: [morning, evening]
+        default: morning
+      source:
+        description: manual always sends; schedule and wake skip if already sent today
+        type: choice
+        options: [manual, schedule, wake]
+        default: manual
+
+# Jobs that commit to data/ share this group so they never run at the same time. A running job is
+# never stopped (cancel-in-progress: false), but GitHub keeps only one *waiting* run per group: a
+# newer dispatch replaces an older pending one. The next tick catches up, and the watchdog still
+# reports a recap that never sent (no receipt).
+concurrency:
+  group: kit-data
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  recap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write          # commit receipts, Log notes and the Garmin token cache
+    env:
+      # Inputs reach scripts only through env, never pasted into run: text.
+      MODE: ${{ inputs.mode }}
+      SOURCE: ${{ inputs.source }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      GARMIN_PERSONAL_API_KEY: ${{ secrets.GARMIN_PERSONAL_API_KEY }}
+      GARMIN_CACHE_KEY: ${{ secrets.GARMIN_CACHE_KEY }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      WORKER_API_SECRET: ${{ secrets.WORKER_API_SECRET }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main            # the newest commit, not the one current when this run was queued
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: npm install -g @anthropic-ai/claude-code@2.1.330     # pinned: a new CLI release can't break the recap overnight
+
+      # Guard, Log notes, Garmin, expiry warnings, Claude, send, receipt. Garmin and Claude
+      # problems are alerted with the fix inside; the recap still goes out.
+      - name: Recap
+        run: python -m kit.recap "$MODE" --source "$SOURCE"
+
+      - name: Save
+        if: always()
+        run: |
+          git config user.name "garmin-life-kit"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || git commit -q -m "$MODE recap $(date -u +%F)"
+          bash tools/push.sh
+
+      # Only when the recap AND the save both worked: the notes are on main, so the Worker can
+      # forget them. Otherwise they stay in the Worker and come back next run.
+      - name: Clear collected notes
+        if: success()
+        run: python -m kit.log ack
+
+      # Last, so a failed save or clear is reported too.
+      - name: Alert on failure
+        if: failure()
+        run: python3 -m kit.telegram alerts --failed "The $MODE recap"

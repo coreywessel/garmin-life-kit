@@ -1,0 +1,10 @@
+out/
+.venv/
+__pycache__/
+*.pyc
+*.env
+.env
+.wrangler/
+node_modules/
+*.egg-info/
+uv.lock

@@ -1,0 +1,44 @@
+name: Watchdog
+
+# The Worker starts the two real checks, 45 minutes after each recap. The GitHub schedule
+# below is only a backstop in case the Worker's clock stops; it may run hours late.
+on:
+  schedule:
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: morning or evening
+        type: choice
+        options: [morning, evening, backstop]
+        default: morning
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read            # read recent runs
+      contents: read
+    env:
+      SLOT: ${{ github.event_name == 'schedule' && 'backstop' || inputs.slot }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      GITHUB_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main            # the newest receipts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Check
+        run: python -m kit.watchdog "$SLOT"
+      - name: Alert on failure
+        if: failure()
+        run: python3 -m kit.telegram alerts --failed "The watchdog"

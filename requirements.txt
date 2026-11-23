@@ -1,0 +1,4 @@
+# Runtime deps for GitHub Actions (pip install -r requirements.txt). Pinned so a new
+# release can't break the recap overnight. The MCP server's `mcp` dep is only in
+# pyproject.toml and requirements-dev.txt: Actions never runs it.
+cryptography==50.0.2

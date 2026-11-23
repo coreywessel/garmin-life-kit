@@ -1,0 +1,30 @@
+# garmin-life-kit Worker. setup/kit.py renders this file to worker/wrangler.toml from
+# profile.toml + setup.json. Don't edit wrangler.toml by hand: change profile.toml and run
+#   uv run setup/kit.py worker
+name = {{WORKER_NAME}}
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+# Log notes wait here until GitHub Actions collects them.
+[[kv_namespaces]]
+binding = "KIT"
+id = {{KV_ID}}
+
+# One trigger every 5 minutes. dueJobs() in src/index.js decides what runs at each tick, in
+# your local time zone, so recap times stay put through daylight saving. Only one trigger,
+# because the free plan allows 5 per Cloudflare account.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Not secret. Secrets go in with `npx --yes wrangler@4 secret put NAME` (setup does it).
+[vars]
+REPO = {{REPO}}
+TIMEZONE = {{TIMEZONE}}
+MORNING = {{MORNING}}
+EVENING = {{EVENING}}
+CHAT_ID = {{CHAT_ID}}
+OWNER_ID = {{OWNER_ID}}
+ALERTS_THREAD = {{ALERTS_THREAD}}
+LOG_THREAD = {{LOG_THREAD}}
+FEATURES = {{FEATURES}}

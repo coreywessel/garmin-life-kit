@@ -1,0 +1,61 @@
+name: Command
+
+# /today /week /last /status, started by the Worker. The answer goes back to the thread the
+# command came from. No concurrency group: GitHub keeps only one waiting run per group and
+# cancels the rest, which would drop commands sent a few seconds apart.
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: today, week, last or status
+        required: true
+      thread_id:
+        description: Telegram thread to reply in (empty = General)
+        default: ""
+
+permissions: {}
+
+jobs:
+  command:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write          # the Garmin token cache may change
+      actions: read            # /status reads the latest runs
+    env:
+      COMMAND: ${{ inputs.command }}
+      THREAD_ID: ${{ inputs.thread_id }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      GARMIN_PERSONAL_API_KEY: ${{ secrets.GARMIN_PERSONAL_API_KEY }}
+      GARMIN_CACHE_KEY: ${{ secrets.GARMIN_CACHE_KEY }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      GITHUB_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # Replies with its own errors in the same thread.
+      - name: Run command
+        id: cmd
+        run: python -m kit.commands "$COMMAND" "$THREAD_ID"
+
+      - name: Save
+        if: always()
+        run: |
+          git config user.name "garmin-life-kit"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || git commit -q -m "command $(date -u +%F-%H%M)"
+          bash tools/push.sh
+
+      # Setup broke before the command could reply (it never ran). Say so where it was asked.
+      - name: Say it failed
+        if: failure() && steps.cmd.outcome == 'skipped'
+        run: python3 -m kit.telegram "$THREAD_ID" --failed "/$COMMAND"

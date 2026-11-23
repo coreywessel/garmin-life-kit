@@ -1,0 +1,30 @@
+# About you. The only file with personal settings in it.
+# Ask Claude to change anything here. After changing [times], Claude redeploys the Worker.
+
+name = ""                     # first name the recaps use. Required.
+timezone = "America/Denver"   # IANA time zone name. Required.
+units = "imperial"            # "imperial" (mi, ft, °F, mph) or "metric" (km, m, °C, km/h)
+week_starts = "monday"        # "monday" or "sunday" (for /week and week totals)
+
+[location]                    # weather line. City-level is plenty.
+label = ""                    # e.g. "Denver, CO"
+lat = 0.0
+lon = 0.0
+
+[times]                       # local, 24h "HH:MM", multiples of 5 minutes
+morning = "07:30"
+evening = "21:00"
+
+[features]                    # true / false
+morning_recap = true
+evening_recap = true
+activity_cards = true
+weather = true
+log_notes = true              # text typed in the group is saved and read by the recaps
+watchdog = true
+
+[recap]
+sleep_target_bed = ""         # optional "22:30": morning says how far from it you went to bed
+about = """
+"""                           # optional plain sentences that help the recap read your data
+                              # ("I snowboard most weekends", "night shifts on Tuesdays")

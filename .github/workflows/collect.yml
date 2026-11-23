@@ -1,0 +1,64 @@
+name: Collect
+
+# Every 2 hours through the day (started by the Worker): file Log notes from the Worker and
+# post a card in Fitness for each new Garmin activity. Each part checks its own profile toggle.
+on:
+  workflow_dispatch:
+
+# Jobs that commit to data/ share this group so they never run at the same time. A running job is
+# never stopped (cancel-in-progress: false), but GitHub keeps only one *waiting* run per group: a
+# newer dispatch replaces an older pending one. The next tick catches up, and the watchdog still
+# reports a recap that never sent (no receipt).
+concurrency:
+  group: kit-data
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write          # commit Log notes, the seen-activities list and the token cache
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      GARMIN_PERSONAL_API_KEY: ${{ secrets.GARMIN_PERSONAL_API_KEY }}
+      GARMIN_CACHE_KEY: ${{ secrets.GARMIN_CACHE_KEY }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      WORKER_API_SECRET: ${{ secrets.WORKER_API_SECRET }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Collect Log notes
+        run: python -m kit.log collect
+
+      # A Log problem shouldn't hold back activity cards.
+      - name: Activity cards
+        if: ${{ !cancelled() }}
+        run: python -m kit.cards
+
+      - name: Save
+        if: always()
+        run: |
+          git config user.name "garmin-life-kit"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || git commit -q -m "collect $(date -u +%F-%H%M)"
+          bash tools/push.sh
+
+      - name: Clear collected notes
+        if: success()
+        run: python -m kit.log ack
+
+      - name: Alert on failure
+        if: failure()
+        run: python3 -m kit.telegram alerts --failed "Collect (Log notes and activity cards)"
