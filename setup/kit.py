@@ -9,11 +9,13 @@ Commands (SETUP.md says when to run each):
     secret NAME hidden prompt for one pasted secret, saved on this computer only
     profile     write profile.toml (--name --timezone --units --city --morning --evening)
     telegram    find the group and owner, create the four topics, write setup.json
-    garmin      check the Garmin key (--days N = how long the key lasts)
+    discover    check the Garmin key, learn which data it returns, write [metrics] (--days N = key lifetime)
+                (`garmin` is the old name and still works)
     secrets     generate the kit's own secrets, push the GitHub Actions secrets
     worker      render wrangler.toml, deploy the Cloudflare Worker, point Telegram at it
     test        commit the setup files, run a real morning recap on GitHub, wait for it
     dry-run     the whole recap pipeline offline with sample data
+    update      pull improvements from the public kit, keeping profile.toml, setup.json and data/
 
 Every command ends with one line starting "OK:" or "FAILED:" in plain words; exit code 0 / 1.
 Secret values are never printed. They live in ~/.config/garmin-life-kit/<repo>.env (mode 600)
@@ -552,10 +554,15 @@ def cmd_status(args) -> str:
         done.append("telegram")
     else:
         todo.append(("Telegram group", "SETUP.md step 6b"))
-    if env.get("GARMIN_PERSONAL_API_KEY") and EXPIRY_GARMIN in names:
+    disc = s.get("discovered") or {}
+    if disc.get("date"):
+        say(f"  Garmin data check: ran {disc['date']} ({len(disc.get('available') or [])} kinds of data found)")
+    else:
+        say("  Garmin data check: not run yet")
+    if env.get("GARMIN_PERSONAL_API_KEY") and EXPIRY_GARMIN in names and disc.get("date"):
         done.append("garmin")
     else:
-        todo.append(("Garmin key", "SETUP.md step 7"))
+        todo.append(("Garmin key and data check", "SETUP.md step 7"))
     for n, step in (("CLAUDE_CODE_OAUTH_TOKEN", "9a"), ("WORKER_GITHUB_TOKEN", "9b")):
         if not env.get(n):
             todo.append((n, f"SETUP.md step {step}"))
@@ -755,6 +762,8 @@ def cmd_profile(args) -> str:
             if not m or int(m.group(2)) % 5:
                 raise Failed(f"--{k} {v} must be 24h HH:MM on a 5-minute mark, like 07:30 or 21:00.")
             changes.append(("times", k, toml_str(v)))
+    if args.wears is not None:
+        changes.append(("devices", "wears", toml_str(args.wears.strip())))
     place = None
     if args.lat is not None or args.lon is not None:
         if args.lat is None or args.lon is None or not (-90 <= args.lat <= 90 and -180 <= args.lon <= 180):
@@ -768,9 +777,12 @@ def cmd_profile(args) -> str:
                     ("location", "lat", repr(round(float(lat), 2))),
                     ("location", "lon", repr(round(float(lon), 2)))]
     if not changes:
-        raise Failed("nothing to change. Pass at least one of --name --timezone --units --city --morning --evening.")
+        raise Failed("nothing to change. Pass at least one of --name --timezone --units --city --morning --evening --wears.")
     for section, key, literal in changes:
-        text = toml_set(text, section, key, literal)
+        if (section, key) == ("devices", "wears"):
+            text = toml_put(text, section, key, literal, DEVICES_HEADER)
+        else:
+            text = toml_set(text, section, key, literal)
     tomllib.loads(text)   # never write a file that doesn't parse
     PROFILE.write_text(text, encoding="utf-8")
     p = load_profile()
@@ -922,26 +934,16 @@ def cmd_telegram(args) -> str:
             f"and the owner is set. {' '.join(notes)}").strip()
 
 
-# ---------- garmin ----------
+# ---------- discover (garmin) ----------
+
+METRICS_HEADER = ("[metrics]           # written by `uv run setup/kit.py discover`; true = shown in recaps, cards and the MCP tools.\n"
+                  "                    # Trim in plain words (\"drop stress\") by setting false. Re-run discover after a new device.\n")
+DEVICES_HEADER = "[devices]\n"
+DEVICES_WEARS = 'wears = ""          # what they told Claude they wear, e.g. "Forerunner 265, HRM-Pro strap". Explains gaps.\n'
+
 
 def fernet_key() -> str:
     return base64.urlsafe_b64encode(os.urandom(32)).decode()
-
-
-def _found_sleep(s) -> bool:
-    return isinstance(s, dict) and any(s.get(k) is not None for k in
-                                      ("sleepTimeSeconds", "sleepStartTimestampLocal", "sleepStartTimestampGMT"))
-
-
-def _found_hrv(h) -> bool:
-    if not isinstance(h, dict):
-        return False
-    summary = h.get("hrvSummary") if isinstance(h.get("hrvSummary"), dict) else h
-    return summary.get("lastNightAvg") is not None
-
-
-def _found_summary(d) -> bool:
-    return isinstance(d, dict) and any(d.get(k) is not None for k in ("totalSteps", "restingHeartRate"))
 
 
 def local_today() -> date:
@@ -952,52 +954,108 @@ def local_today() -> date:
         return date.today()
 
 
-def cmd_garmin(args) -> str:
+def import_kit(*names):
+    """Import kit.<name> from this repo (lazily). This script's folder must not shadow the package."""
+    import importlib
+    sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != HERE]
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    loaded = sys.modules.get("kit")
+    if loaded is not None and not str(getattr(loaded, "__file__", "") or "").startswith(str(ROOT)):
+        for n in [n for n in sys.modules if n == "kit" or n.startswith("kit.")]:
+            del sys.modules[n]
+    try:
+        return [importlib.import_module(f"kit.{n}") for n in names]
+    except Exception as e:
+        raise Failed(f"couldn't load the kit's own code ({type(e).__name__}: {e}). Run it from the kit folder "
+                     "with: uv run setup/kit.py discover --days N")
+
+
+def toml_put(text: str, section: str, key: str, literal: str, header: str = "") -> str:
+    """Like toml_set, but adds the key (or the whole section) when it isn't there yet."""
+    try:
+        return toml_set(text, section, key, literal)
+    except Failed:
+        return toml_insert(text, section, f"{key} = {literal}\n", header)
+
+
+def toml_insert(text: str, section: str, new: str, header: str = "") -> str:
+    """Insert raw key line(s) after the last key of a section; append the section if it's missing."""
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    current, in_multi = "", False
+    start = last_key = (-1 if section == "" else None)
+    for i, line in enumerate(lines):
+        if in_multi:
+            in_multi = line.count('"""') % 2 == 0
+            if not in_multi and current == section:
+                last_key = i
+            continue
+        stripped = line.strip()
+        h = re.match(r"^\[([A-Za-z0-9_.-]+)\]", stripped)
+        if h and not stripped.startswith("[["):
+            current = h.group(1)
+            if current == section:
+                start = last_key = i
+            continue
+        if line.count('"""') % 2 == 1:
+            in_multi = True
+        if current == section and re.match(r"^\s*[A-Za-z0-9_-]+\s*=", line):
+            last_key = i
+    if start is None:   # no such section: append it
+        lines += ["\n", header or f"[{section}]\n", new]
+    else:
+        lines.insert(last_key + 1, new)
+    return "".join(lines)
+
+
+def garmin_data_type(message: str) -> str:
+    """Which data an error was about, from the Personal API path in kit.garmin's message."""
+    m = message.lower()
+    for needle, label in (("hrv", "HRV"), ("sleep", "sleep"), ("usersummary", "the daily summary"),
+                          ("summary", "the daily summary"), ("activit", "activities")):
+        if needle in m:
+            return label
+    return "the data check"
+
+
+def discover_today() -> date:
+    """Local today; in a dry run the fixture day (KIT_TODAY or kit.profile.FIXTURE_TODAY), so fixtures match."""
+    if DRY:
+        pinned = os.environ.get("KIT_TODAY")
+        if not pinned:
+            try:
+                (kp,) = import_kit("profile")
+                pinned = getattr(kp, "FIXTURE_TODAY", None)
+            except Failed:
+                pinned = None
+        if pinned:
+            return date.fromisoformat(str(pinned))
+    return local_today()
+
+
+def cmd_discover(args) -> str:
     if not args.days or args.days < 1:
-        raise Failed("say how many days the Garmin key lasts: uv run setup/kit.py garmin --days 365")
+        raise Failed("say how many days the Garmin key lasts: uv run setup/kit.py discover --days 365")
     env = require_env(["GARMIN_PERSONAL_API_KEY"])
     if not env.get("GARMIN_CACHE_KEY"):
         write_env({"GARMIN_CACHE_KEY": fernet_key()})
         env = read_env()
     os.environ["GARMIN_CACHE_KEY"] = env["GARMIN_CACHE_KEY"]   # RepoCache reads it from the environment
-
+    os.environ.pop("KIT_DATA_DIR", None)   # the token cache must land in data/, where `test` commits it
     if DRY:
-        g = FAKE.garmin_module()
+        os.environ["KIT_DRY_RUN"] = "1"    # kit.garmin's DryRunClient reads fixtures (KIT_DRY_FIXTURES picks the set)
     else:
-        # The kit package lives at the repo root; this script's own folder must not shadow it.
-        sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != HERE]
-        sys.path.insert(0, str(ROOT))
         os.environ.pop("KIT_DRY_RUN", None)
-        os.environ.pop("KIT_DATA_DIR", None)   # the token cache must land in data/, where `test` commits it
-        try:
-            import kit.garmin as g   # lazy: only this command needs it
-        except Exception as e:
-            raise Failed(f"couldn't load the kit's Garmin code ({type(e).__name__}: {e}). Run it from the kit folder "
-                         "with: uv run setup/kit.py garmin --days N")
+    g, metrics, discover = import_kit("garmin", "metrics", "discover")
+    METRICS = metrics.METRICS
+
     # Exactly one key exchange at most: one Client, token cached in data/garmin-token.enc so `test`
     # commits it and the first Actions runs reuse it. Never retried here: Garmin rate-limits exchanges.
-    client = g.Client(env["GARMIN_PERSONAL_API_KEY"], g.RepoCache())
-    today = local_today()
-    days = [today - timedelta(days=i) for i in (2, 1, 0)]
-    found = {"sleep": [], "hrv": [], "summary": []}
-    acts: list = []
-
-    def call(label, fn, *a):
-        """Only an empty answer counts as missing data; any other Garmin error stops here, named."""
-        try:
-            return fn(*a)
-        except (g.KeyRejected, g.RateLimited, g.ExchangeFailed):
-            raise
-        except g.GarminError as e:
-            raise Failed(f"Garmin gave an error for {label} ({e}). That's not something the person did. Run this "
-                         "again in a few minutes; if it says the same, the kit needs a fix.")
-
     try:
-        for d in days:
-            found["sleep"].append(_found_sleep(call("sleep", client.sleep, d)))
-            found["hrv"].append(_found_hrv(call("HRV", client.hrv, d)))
-            found["summary"].append(_found_summary(call("the daily summary", client.daily_summary, d)))
-        acts = call("activities", client.activities, today - timedelta(days=13), today) or []
+        client = FAKE.garmin_client(g) if DRY else g.Client(env["GARMIN_PERSONAL_API_KEY"], g.RepoCache())
+        res = discover.run(client, discover_today())
     except g.KeyRejected:
         raise Failed("key rejected: Garmin didn't accept the API key. Make a new one at "
                      "connect.garmin.com/app/settings/personalApiToken, then the person runs: "
@@ -1007,32 +1065,64 @@ def cmd_garmin(args) -> str:
                      "again once. Don't retry in a loop.")
     except g.ExchangeFailed as e:
         raise Failed(f"couldn't reach Garmin ({e}). Check the internet connection and run this again in a few minutes.")
+    except g.GarminError as e:
+        raise Failed(f"Garmin gave an error for {garmin_data_type(str(e))} ({e}). That's not something the person did. "
+                     "Run this again in a few minutes; if it says the same, the kit needs a fix.")
 
-    labels = {"sleep": "Sleep", "hrv": "HRV", "summary": "Daily summary (steps, resting heart rate, Body Battery, stress)"}
-    missing = []
-    for k, flags in found.items():
-        gaps = [d.isoformat() for d, ok in zip(days, flags) if not ok]
-        say(f"{labels[k]}: found {sum(flags)} of 3 days" + (f" (missing {', '.join(gaps)})" if gaps else ""))
-        if not any(flags):
-            missing.append(labels[k].split(" (")[0])
-    say(f"Activities, last 14 days: {len(acts)}")
-    for a in acts[:3]:
-        say(f"  {str(a.get('startTimeLocal', ''))[:16]}  {a.get('activityName') or a.get('name') or ''}")
-
+    # "unknown" = nothing to judge by (no sleep record, no activities): those switches stay exactly as they are.
+    unknown = {n: r for n, r in (res.get("unknown") or {}).items() if n in METRICS}
+    now = [n for n in METRICS if n in set(res.get("available") or []) and n not in unknown]
+    types = res.get("activity_types") or {}
     data = load_setup()
     expires = date.today() + timedelta(days=args.days)
     upsert_expiry(data, EXPIRY_GARMIN, expires,
                   "Garmin data stops: recaps go out without Garmin numbers, no activity cards, and Alerts says the key was rejected",
                   "Make a new key at connect.garmin.com/app/settings/personalApiToken, then in the kit folder: "
-                  "uv run setup/kit.py secret GARMIN_PERSONAL_API_KEY, uv run setup/kit.py garmin --days N, "
+                  "uv run setup/kit.py secret GARMIN_PERSONAL_API_KEY, uv run setup/kit.py discover --days N, "
                   "uv run setup/kit.py secrets")
-    save_setup(data)
-    if len(missing) == 3 and not acts:
-        raise Failed("the key works, but Garmin sent no data for the last 3 days. Open the Garmin Connect app on the "
+    if not now and "sleep" in unknown:
+        save_setup(data)
+        raise Failed("the key works, but Garmin sent no data for the days checked. Open the Garmin Connect app on the "
                      "phone so the watch syncs, then run this again.")
-    gist = ", ".join(f"{labels[k].split(' (')[0].lower()} {sum(f)} of 3 days" for k, f in found.items())
-    extra = f" Missing: {', '.join(missing)} (fine; the recap says no data for it)." if missing else ""
-    return f"The Garmin key works. Found {gist} and {len(acts)} activities in the last 14 days. Key expires {expires}.{extra}"
+
+    prev = (data.get("discovered") or {}).get("available")
+    prev = set(prev) if isinstance(prev, list) else None
+    current = (load_profile().get("metrics") or {})
+    text = PROFILE.read_text(encoding="utf-8")
+    for name, spec in METRICS.items():
+        label = spec[0] if isinstance(spec, (tuple, list)) else name
+        if name in unknown:
+            say(f"{label}: not checked ({unknown[name]})")
+            continue
+        if name not in now:
+            value, line = False, f"{label}: not found"
+        elif prev is not None and name not in prev:
+            value, line = True, f"{label}: found"
+        else:   # found before and now (or no earlier run on record): keep a choice to turn it off
+            value = current.get(name, True) is not False
+            line = f"{label}: found" + ("" if value else " (kept off, as you set it)")
+        say(line)
+        text = toml_put(text, "metrics", name, "true" if value else "false", METRICS_HEADER)
+    for name, reason in (res.get("not_in_kit") or {"weight": "not available through the kit yet"}).items():
+        say(f"{name[:1].upper() + name[1:]}: {reason}")
+    tomllib.loads(text)
+    PROFILE.write_text(text, encoding="utf-8")
+    if types:
+        say("Activity types, last 14 days: " + ", ".join(f"{k} {v}" for k, v in
+                                                        sorted(types.items(), key=lambda kv: (-kv[1], kv[0]))))
+    else:
+        say("Activity types, last 14 days: none")
+
+    data["discovered"] = {"date": date.today().isoformat(), "available": now, "activity_types": types}
+    save_setup(data)
+    missing = [(METRICS[n][0] if isinstance(METRICS[n], (tuple, list)) else n).split(" (")[0]
+               for n in METRICS if n not in now and n not in unknown]
+    gist = f"Found {len(now)} of {len(METRICS)} kinds of data" + (f" (not found: {', '.join(missing)})" if missing else "")
+    if unknown:
+        gist += f"; {len(unknown)} not checked yet and left as they were"
+    acts = sum(types.values())
+    return (f"The Garmin key works. {gist}, and {acts} activities in the last 14 days. "
+            f"profile.toml [metrics] is updated. Key expires {expires}.")
 
 
 # ---------- secrets ----------
@@ -1216,7 +1306,8 @@ def push_setup_files() -> None:
             raise Failed(f"git couldn't commit the setup files ({last_line(output(p))}). If it asks who you are, run: "
                          'git config --global user.name "Your Name" and git config --global user.email you@example.com')
         say("Committed the setup files.")
-    p = run(["git", "pull", "--rebase", "-q", "origin", "main"])
+    # --rebase=merges keeps an `update` merge commit (and so the link to the public kit's history).
+    p = run(["git", "pull", "--rebase=merges", "-q", "origin", "main"])
     if p.returncode != 0:
         run(["git", "rebase", "--abort"])
         raise Failed(f"git couldn't bring in the latest changes from GitHub ({last_line(output(p))}).")
@@ -1276,6 +1367,219 @@ def cmd_test(args) -> str:
         for line in tail:
             say("  " + line)
     raise Failed(f"the test recap ended as {conclusion or 'unknown'} on GitHub. Details: {url}")
+
+
+# ---------- update (from the public kit) ----------
+
+TEMPLATE_URL = "https://github.com/coreywessel/garmin-life-kit"
+KEEP = ("profile.toml", "setup.json", "worker/wrangler.toml")   # plus everything under data/
+
+
+def kept(path: str) -> bool:
+    return path in KEEP or path.startswith("data/")
+
+
+def git(*a, check: str = "") -> subprocess.CompletedProcess:
+    """Run git; with check= set, a non-zero exit becomes FAILED: <check> (<git's last line>)."""
+    p = run(["git", *a])
+    if check and p.returncode != 0:
+        raise Failed(f"{check} ({last_line(output(p))}).")
+    return p
+
+
+def toml_blocks(text: str) -> dict:
+    """section -> {"header": [lines], "keys": {key: [lines]}} ("" = top level). Multi-line values stay whole."""
+    blocks = {"": {"header": [], "keys": {}}}
+    current, open_key = "", None
+    for line in text.splitlines(keepends=True):
+        if open_key:
+            blocks[current]["keys"][open_key].append(line)
+            if line.count('"""') % 2 == 1:
+                open_key = None
+            continue
+        stripped = line.strip()
+        h = re.match(r"^\[([A-Za-z0-9_.-]+)\]", stripped)
+        if h and not stripped.startswith("[["):
+            current = h.group(1)
+            blocks[current] = {"header": [line], "keys": {}}
+            continue
+        k = re.match(r"^\s*([A-Za-z0-9_-]+)\s*=", line)
+        if k:
+            blocks[current]["keys"][k.group(1)] = [line]
+            if line.count('"""') % 2 == 1:
+                open_key = k.group(1)
+        elif stripped.startswith("#"):   # comment continuing the key (or header) above
+            if blocks[current]["keys"]:
+                blocks[current]["keys"][list(blocks[current]["keys"])[-1]].append(line)
+            else:
+                blocks[current]["header"].append(line)
+    return blocks
+
+
+def merge_new_profile_keys(mine: str, theirs: str) -> tuple[str, list[str]]:
+    """Append sections/keys the template's profile.toml has and the person's doesn't, with template defaults."""
+    have = toml_blocks(mine)
+    added = []
+    text = mine
+    for section, block in toml_blocks(theirs).items():
+        if section not in have:
+            if not block["keys"]:
+                continue
+            body = "".join(block["header"]) + "".join("".join(v) for v in block["keys"].values())
+            text = text + ("" if text.endswith("\n") else "\n") + "\n" + body
+            added.append(f"[{section}]")
+            continue
+        for key, lines in block["keys"].items():
+            if key in have[section]["keys"]:
+                continue
+            raw = "".join(lines)
+            text = toml_insert(text, section, raw if raw.endswith("\n") else raw + "\n")
+            added.append(f"{section + '.' if section else ''}{key}")
+    tomllib.loads(text)
+    return text, added
+
+
+def run_tests() -> subprocess.CompletedProcess:
+    if shutil.which("uv"):
+        return run(["uv", "run", "--with", "pytest", "pytest", "-q"], timeout=1800)
+    return subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=ROOT, text=True, capture_output=True,
+                          encoding="utf-8", errors="replace", env=child_env(), timeout=1800)
+
+
+def merge_in_progress() -> bool:
+    return git("rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
+
+
+def push_main(what: str) -> None:
+    """Plain push (a merge commit is never rebased). If GitHub moved meanwhile, merge that in and push once more."""
+    if git("push", "-q", "origin", "HEAD:main").returncode == 0:
+        return
+    p = git("pull", "--no-rebase", "--no-edit", "-q", "origin", "main")
+    if p.returncode != 0:
+        if merge_in_progress():
+            git("merge", "--abort")
+        raise Failed(f"{what} on this computer, but GitHub changed at the same time and the two couldn't be combined "
+                     f"({last_line(output(p))}). Run: git pull origin main, then git push origin HEAD:main")
+    p = git("push", "-q", "origin", "HEAD:main")
+    if p.returncode != 0:
+        raise Failed(f"{what} on this computer but couldn't be pushed ({last_line(output(p))}). Run: git push origin HEAD:main")
+
+
+def check_profile_loads() -> None:
+    """The merged kit must still accept the person's profile.toml (kit.profile.load, in a fresh process)."""
+    env = {k: v for k, v in child_env().items() if k not in ("KIT_DRY_RUN", "KIT_PROFILE", "KIT_DATA_DIR")}
+    p = subprocess.run([sys.executable, "-c", "import kit.profile as p; p.load()"], cwd=ROOT, env=env, text=True,
+                       capture_output=True, encoding="utf-8", errors="replace", timeout=120)
+    if p.returncode != 0:
+        raise Failed(f"after the update, the kit no longer accepts profile.toml ({last_line(output(p))}), so I undid it. "
+                     "Nothing changed. Claude can fix profile.toml, then run this again.")
+
+
+def cmd_update(args) -> str:
+    if DRY:
+        return "dry run: would fetch the public kit, merge it in (keeping your profile, setup and data), run the tests and push. Nothing changed."
+    branch = git("symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
+    if branch != "main":
+        raise Failed(f"this copy is on {branch or 'no branch'}, not main. Run: git checkout main, then run this again.")
+    if merge_in_progress():
+        raise Failed("an earlier merge was left unfinished. Run: git merge --abort, then run this again.")
+    if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+        raise Failed("there are changes here that aren't committed. Commit them (or run: git stash), then run this again.")
+
+    # GitHub Actions commit data/ to main every day, so first catch up with the copy on GitHub.
+    git("fetch", "-q", "origin", check="couldn't download your copy from GitHub. Check the internet connection and `gh auth status`")
+    p = git("pull", "--ff-only", "-q", "origin", "main")
+    if p.returncode != 0:
+        raise Failed("this computer and GitHub both have changes the other doesn't, so I stopped before updating "
+                     f"({last_line(output(p))}). Run: git pull origin main, then run this again.")
+
+    url = args.template or TEMPLATE_URL
+    if git("remote", "get-url", "template").returncode != 0:
+        git("remote", "add", "template", url, check="couldn't add the public kit as a remote")
+    elif args.template:
+        git("remote", "set-url", "template", url, check="couldn't point the template remote at that address")
+    git("fetch", "-q", "template", check="couldn't download the public kit. Check the internet connection, then run this again")
+    if git("rev-parse", "-q", "--verify", "template/main").returncode != 0:
+        raise Failed("the public kit has no main branch to update from.")
+
+    linked = ""
+    if git("merge-base", "HEAD", "template/main").returncode != 0:
+        # A copy made from a GitHub template starts with a fresh history. Find the template commit it
+        # started from (same files exactly) and tell git that's its parent.
+        roots = git("rev-list", "--max-parents=0", "HEAD").stdout.split()
+        trees = dict(line.split() for line in git("log", "--format=%T %H", "template/main").stdout.splitlines() if line)
+        match = next(((r, trees[t]) for r in roots
+                      if (t := git("rev-parse", f"{r}^{{tree}}").stdout.strip()) in trees), None)
+        if not match:
+            raise Failed("couldn't match this copy to the public kit's history, so it can't update by itself. Claude can "
+                         "merge it by hand, keeping profile.toml, setup.json, data/ and worker/wrangler.toml.")
+        git("replace", "--graft", match[0], match[1], check="couldn't link this copy to the public kit's history")
+        linked = "Linked this copy to the public kit's history (first update). "
+        say(linked.strip())
+
+    orig = git("rev-parse", "HEAD").stdout.strip()
+    their_profile = git("show", "template/main:profile.toml").stdout
+    p = git("merge", "--no-ff", "--no-commit", "template/main")
+    if not merge_in_progress():
+        if p.returncode != 0:
+            raise Failed(f"git couldn't start the merge ({last_line(output(p))}). Nothing changed.")
+        if git("rev-list", "--count", "origin/main..HEAD").stdout.strip() not in ("", "0"):
+            push_main("Your copy was already up to date")
+            return "Already up to date with the public kit. Pushed the commits that were waiting here."
+        return "Already up to date with the public kit. Nothing changed."
+
+    added = []
+    try:
+        conflicts = git("diff", "--name-only", "--diff-filter=U").stdout.split()
+        other = [f for f in conflicts if not kept(f)]
+        if other:
+            raise Failed(f"the update clashes with changes made in this copy, in: {', '.join(other)}. Nothing changed. "
+                         "Claude can merge by hand: git merge template/main, fix those files, keep profile.toml, "
+                         "setup.json, data/ and worker/wrangler.toml as they are here.")
+        # The person's own files always win, conflict or not (a changed default must never overwrite their setting).
+        mine = [f for f in git("ls-tree", "-r", "--name-only", orig).stdout.splitlines() if kept(f)]
+        if mine:
+            git("checkout", orig, "--", *mine, check="couldn't keep your own files during the update")
+        if PROFILE.is_file() and their_profile:
+            text, added = merge_new_profile_keys(PROFILE.read_text(encoding="utf-8"), their_profile)
+            if added:
+                PROFILE.write_text(text, encoding="utf-8")
+                git("add", "profile.toml")
+        for f in conflicts:   # anything still marked (e.g. a kept file deleted on one side)
+            git("add", "-A", "--", f)
+        p = git("commit", "-q", "--no-edit")
+        if p.returncode != 0:
+            raise Failed(f"git couldn't finish the merge ({last_line(output(p))}). Nothing changed.")
+    except BaseException:   # Ctrl-C, a bad profile line, anything: never leave a half-done merge behind
+        if merge_in_progress():
+            git("merge", "--abort")
+        raise
+
+    keep = False
+    try:   # only a green, still-valid update survives; anything else (red, timeout, Ctrl-C) goes back
+        say("Running the kit's tests...")
+        t = run_tests()
+        if t.returncode not in (0, 5):   # 5 = no tests collected
+            for line in ((t.stdout or "") + (t.stderr or "")).strip().splitlines()[-25:]:
+                say("  " + line)
+            raise Failed("the update made the kit's tests fail, so I undid it. Nothing changed. The test output is above.")
+        check_profile_loads()
+        keep = True
+    finally:
+        if not keep:
+            git("reset", "-q", "--hard", orig)
+
+    stat = git("diff", "--stat", orig, "HEAD").stdout.rstrip()
+    if stat:
+        say(stat)
+    push_main("The update is merged")
+    changed = [f for f in git("diff", "--name-only", orig, "HEAD").stdout.splitlines() if f]
+    worker = any(f.startswith("worker/") and f != "worker/wrangler.toml" for f in changed)
+    news = f" New profile settings added with their defaults: {', '.join(added)}." if added else ""
+    nxt = (" The Worker changed: run uv run setup/kit.py worker next." if worker
+           else " No Worker changes, so nothing else to run.")
+    return (f"{linked}Updated from the public kit: {len(changed)} files changed, tests pass, pushed. "
+            f"Your profile, setup.json and data were kept.{news}{nxt}")
 
 
 # ---------- dry-run ----------
@@ -1429,54 +1733,19 @@ class Fake:
             return done("v22.16.0\n")
         return done(f"{cmd[0]} 1.0.0\n")
 
-    def garmin_module(self):
-        fake = self
+    def garmin_client(self, g):
+        """kit.garmin's DryRunClient (fixtures), or one that raises the error a test asked for."""
+        self.calls.append(("garmin", "DryRunClient"))
+        if not self.garmin_error:
+            return g.DryRunClient()
+        err = getattr(g, self.garmin_error)
 
-        class GarminError(Exception):
-            fix = ""
-
-        class KeyRejected(GarminError):
-            pass
-
-        class RateLimited(GarminError):
-            pass
-
-        class ExchangeFailed(GarminError):
-            pass
-
-        class RepoCache:
-            def __init__(self, path=None, key=None):
-                self.key = os.environ.get("GARMIN_CACHE_KEY")
-
-        class Client:
-            def __init__(self, key, cache=None):
-                self.key, self.cache = key, cache
-                fake.calls.append(("garmin", "Client", bool(cache and cache.key)))
-
-            def _check(self):
-                if fake.garmin_error:
-                    raise {"KeyRejected": KeyRejected, "RateLimited": RateLimited, "ExchangeFailed": ExchangeFailed,
-                           "GarminError": GarminError}[fake.garmin_error]("Garmin /hrv-service/hrv/x answered HTTP 404")
-
-            def sleep(self, d):
-                self._check()
-                return {"sleepTimeSeconds": 27000, "sleepStartTimestampLocal": 1}
-
-            def hrv(self, d):
-                self._check()
-                return {"hrvSummary": {"lastNightAvg": 48}}
-
-            def daily_summary(self, d):
-                self._check()
-                return {"totalSteps": 9000, "restingHeartRate": 52}
-
-            def activities(self, start, end):
-                self._check()
-                return [{"activityName": "Morning Run", "startTimeLocal": f"{end} 07:00:00"}]
-
-        return type("FakeGarmin", (), dict(Client=Client, RepoCache=RepoCache, GarminError=GarminError,
-                                           KeyRejected=KeyRejected, RateLimited=RateLimited,
-                                           ExchangeFailed=ExchangeFailed))
+        class Failing:
+            def __getattr__(self, name):
+                def boom(*a, **k):
+                    raise err("Garmin /hrv-service/hrv/x answered HTTP 404")
+                return boom
+        return Failing()
 
 
 FAKE = Fake()
@@ -1506,24 +1775,28 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--city")
     s.add_argument("--morning")
     s.add_argument("--evening")
+    s.add_argument("--wears", help='what they wear, e.g. "Forerunner 265, HRM-Pro strap"')
     s.add_argument("--lat", type=float)
     s.add_argument("--lon", type=float)
     s = sub.add_parser("telegram", parents=[common], help="find the group, create topics")
     s.add_argument("--chat-id", type=int)
-    s = sub.add_parser("garmin", parents=[common], help="check the Garmin key")
-    s.add_argument("--days", type=int)
+    for alias in ("discover", "garmin"):
+        s = sub.add_parser(alias, parents=[common], help="check the Garmin key and learn which data it has")
+        s.add_argument("--days", type=int, help="how many days the Garmin key lasts")
     s = sub.add_parser("secrets", parents=[common], help="generate + push secrets")
     s.add_argument("--github-token-days", type=int, help="only if the GitHub token has an expiry")
     s = sub.add_parser("worker", parents=[common], help="deploy the Cloudflare Worker")
     s.add_argument("--account-id", help="Cloudflare account id, when the login has more than one")
     sub.add_parser("test", parents=[common], help="run a real morning recap on GitHub")
     sub.add_parser("dry-run", parents=[common], help="offline pipeline with sample data")
+    s = sub.add_parser("update", parents=[common], help="pull improvements from the public kit")
+    s.add_argument("--template", help="address of the kit to update from (default: the public kit)")
     return ap
 
 
 COMMANDS = {"status": cmd_status, "check": cmd_check, "secret": cmd_secret, "profile": cmd_profile,
-            "telegram": cmd_telegram, "garmin": cmd_garmin, "secrets": cmd_secrets, "worker": cmd_worker,
-            "test": cmd_test, "dry-run": cmd_dry_run}
+            "telegram": cmd_telegram, "discover": cmd_discover, "garmin": cmd_discover, "secrets": cmd_secrets, "worker": cmd_worker,
+            "test": cmd_test, "dry-run": cmd_dry_run, "update": cmd_update}
 
 
 def main(argv=None) -> int:

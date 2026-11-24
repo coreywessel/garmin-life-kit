@@ -314,8 +314,82 @@ command fakes every network call and external tool.
 | `secret NAME` | Hidden prompt, light format check, writes to the local env file. For the human to run in their own terminal. Names: TELEGRAM_BOT_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, GARMIN_PERSONAL_API_KEY, WORKER_GITHUB_TOKEN. | - |
 | `profile --name N --timezone TZ --units U --city "Denver, CO" [--morning HH:MM --evening HH:MM]` | Writes profile.toml (keeps comments; geocodes the city with Open-Meteo's free geocoding API to lat/lon). | - |
 | `telegram` | getMe; reads getUpdates to find the one forum supergroup the bot is in and the human who wrote there (owner_id); checks topics are on and the bot is admin with Manage Topics; creates Today/Fitness/Log/Alerts (skips ones already in setup.json); posts a hello in each; writes setup.json. Must run **before** the webhook is set. | TELEGRAM_BOT_TOKEN |
-| `garmin --days N` | Exchanges the key, pulls the last 3 days, prints found/missing per data type, records the key's expiry (today + N) in setup.json. | GARMIN_PERSONAL_API_KEY |
+| `discover --days N` (alias `garmin`) | See "Data discovery" below. | GARMIN_PERSONAL_API_KEY |
 | `secrets` | Generates GARMIN_CACHE_KEY, WORKER_API_SECRET, TELEGRAM_WEBHOOK_SECRET, SHORTCUT_SECRET if missing; records the Claude token expiry (today + 365) if not set, and the GitHub token's only with `--github-token-days N` (the PAT link makes a no-expiry token); `secret` re-stamps these when a new value is saved; pushes every Actions secret with `gh secret set --repo <repo>` over stdin. | repo in setup.json |
 | `worker` | Renders worker/wrangler.toml; creates the KV namespace if setup.json has no kv_id; `wrangler secret put` each Worker secret over stdin; `wrangler deploy`; saves the URL; checks /health; sets the WORKER_URL Actions secret; `setWebhook` (secret_token, allowed_updates [message]); `setMyCommands` scoped to the chat. Wrangler is `npx --yes wrangler@4`. Re-run any time profile [times] or [features] change. | all above + `wrangler login` |
 | `test` | Commits/pushes profile.toml + setup.json + worker/wrangler.toml if changed, then `gh workflow run recap.yml -f mode=morning -f source=manual`, waits for the run, prints its result and URL. | everything |
 | `dry-run` | Full offline pipeline, prints every message. | nothing |
+
+## Data discovery (v0.2)
+
+Garmin devices differ: some have no HRV, no sleep stages, no Body Battery, no SpO2. The kit
+learns what this person's account actually returns and only shows that.
+
+**Metric switches** live in `profile.toml`:
+
+```toml
+[devices]
+wears = ""          # what they told Claude they wear, e.g. "Forerunner 265, HRM-Pro strap". Explains gaps.
+
+[metrics]           # written by `uv run setup/kit.py discover`; true = shown in recaps, cards and the MCP tools.
+                    # Trim in plain words ("drop stress") by setting false. Re-run discover after a new device.
+sleep = true
+sleep_stages = true
+sleep_score = true
+hrv = true
+resting_hr = true
+body_battery = true
+stress = true
+steps = true
+respiration = true
+spo2 = true
+vo2max = true
+training_load = true
+training_effect = true
+hr_zones = true
+```
+
+The metric names and how each is read from Garmin's responses live in ONE table,
+`kit/metrics.py` (`METRICS = {name: (label, where it comes from, extractor)}`). A missing
+`[metrics]` section or key means true (old profiles keep working). An unknown key is a
+stderr warning naming the valid ones and is ignored, so a metric renamed or dropped by an update
+never stops the recaps (a non-true/false value is still an error). Weight is not in v1: no
+verified Personal API endpoint, so discovery reports it as "not available through the kit yet".
+
+**Discovery run** (`kit.discover.run(client, today) -> dict`): exactly ONE token exchange
+(through the cache), then about 10 data calls: activities for the last 14 days, and sleep,
+HRV and daily summary for 3 dates (yesterday, 3 days ago, 7 days ago). Never retries on 429
+(RateLimited propagates). A metric is available if any sampled response has a usable value.
+Returns `{"available": [names], "missing": [names], "activity_types": {typeKey: count},
+"calls": n, "sampled_dates": [...]}`.
+
+**Setup command** `uv run setup/kit.py discover --days N` (replaces `garmin`; `garmin` stays as
+an alias): key check + discovery + records the key expiry (today + N) + writes `[metrics]` +
+stores `{"date", "available", "activity_types"}` under `"discovered"` in setup.json. Re-run
+rule: not available → false; newly available → true; available before and now, but false in
+the profile → stays false (the person trimmed it). Prints one plain line per metric (found /
+not found) and the activity types, then OK:. Rate limited → FAILED with "wait 30-60 minutes".
+
+**Everything builds from enabled metrics:** `numbers.py` drops disabled metrics' keys,
+`cards.py` skips disabled fields, command answers skip them, MCP tools leave them out (MCP with
+no profile: all enabled). Missing data is never an error anywhere: a sparse account (no HRV, no
+stages, no Body Battery, no activities) still gets a short recap.
+
+## Updates from the public kit (v0.2)
+
+`uv run setup/kit.py update` pulls improvements from TEMPLATE into the person's copy:
+1. Working tree must be clean (else FAILED: commit or stash first).
+2. Adds remote `template` (https://github.com/coreywessel/garmin-life-kit) if missing, fetches.
+3. A copy made from a GitHub template has no shared history. If `git merge-base HEAD
+   template/main` finds nothing, find the template commit whose tree equals the copy's root
+   commit tree and `git replace --graft <root> <that commit>` so git sees the shared start.
+   No match → FAILED (Claude merges by hand, keeping profile.toml, setup.json, data/,
+   worker/wrangler.toml).
+4. `git merge --no-edit template/main`. Conflicts in profile.toml, setup.json, data/ and
+   worker/wrangler.toml → keep theirs-locally (`--ours`). New keys the template added to
+   profile.toml are merged in by appending missing sections/keys with template defaults.
+   Any other conflict → `git merge --abort`, FAILED listing the files.
+5. Runs `python -m pytest -q`; red → `git reset --hard ORIG_HEAD`, FAILED.
+6. Pushes. Prints what changed (`git diff --stat ORIG_HEAD`) and, if `worker/` changed, says to
+   run `uv run setup/kit.py worker`. OK:.
+Secrets are never touched (they live outside the repo).

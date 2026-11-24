@@ -54,6 +54,47 @@ GOOD = {
 }
 
 
+# A tiny stand-in for kit/ so discover's own logic is tested apart from builder-python's code.
+STUB_KIT = {
+    "__init__.py": "",
+    "metrics.py": 'METRICS = {"sleep": ("Sleep", "sleep", None), "hrv": ("HRV", "hrv", None), '
+                  '"stress": ("Stress", "summary", None), "spo2": ("SpO2", "summary", None)}\n',
+    "garmin.py": """import os
+class GarminError(RuntimeError):
+    fix = ""
+class KeyRejected(GarminError): pass
+class RateLimited(GarminError): pass
+class ExchangeFailed(GarminError): pass
+class RepoCache:
+    def __init__(self, path=None, key=None):
+        self.key = key or os.environ.get("GARMIN_CACHE_KEY")
+class Client:
+    made = []
+    def __init__(self, key, cache=None):
+        Client.made.append((key, cache))
+        self.fixtures = "garmin"
+    def sleep(self, d): return {}
+class DryRunClient:
+    def __init__(self):
+        assert os.environ.get("KIT_DRY_RUN") == "1"
+        self.fixtures = os.environ.get("KIT_DRY_FIXTURES", "garmin")
+    def sleep(self, d): return {}
+""",
+    "discover.py": """SETS = {"garmin": ["sleep", "hrv", "stress", "spo2"], "garmin-sparse": ["sleep"], "garmin-empty": []}
+TYPES = {"garmin": {"running": 3, "cycling": 1}, "garmin-sparse": {"walking": 1}, "garmin-empty": {}}
+UNKNOWN = {"garmin-empty": {"sleep": "no sleep record on the days checked", "hrv": "no sleep record on the days checked"}}
+def run(client, today):
+    client.sleep(today)
+    f = getattr(client, "fixtures", "garmin")
+    avail = SETS[f]
+    unknown = UNKNOWN.get(f, {})
+    return {"available": avail, "missing": [m for m in SETS["garmin"] if m not in avail and m not in unknown],
+            "unknown": unknown, "not_in_kit": {"weight": "not available through the kit yet"},
+            "activity_types": TYPES[f], "calls": 10, "sampled_dates": [str(today)]}
+""",
+}
+
+
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     root = tmp_path / "garmin-life-kit"
@@ -62,6 +103,10 @@ def repo(tmp_path, monkeypatch):
     (root / "setup" / "kit.py").write_text((REAL_ROOT / "setup" / "kit.py").read_text())
     (root / "worker" / "wrangler.toml.template").write_text((REAL_ROOT / "worker" / "wrangler.toml.template").read_text())
     (root / "profile.toml").write_text(PROFILE, encoding="utf-8")
+    (root / "kit").mkdir()
+    for name, body in STUB_KIT.items():
+        (root / "kit" / name).write_text(body)
+    monkeypatch.delenv("KIT_DRY_FIXTURES", raising=False)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -380,45 +425,153 @@ def test_telegram_rerun_keeps_topics(repo, capsys):
     assert not any("createForumTopic" in c[2] for c in mod.FAKE.calls if c[0] == "http")
 
 
-# ---------- garmin ----------
+# ---------- discover (was: garmin) ----------
 
 def garmin_ready(repo):
     cli(repo, "secret", "GARMIN_PERSONAL_API_KEY", stdin=GOOD["GARMIN_PERSONAL_API_KEY"] + "\n")
 
 
-# Why: Garmin rate-limits key exchanges; setup must build ONE client with the repo token cache
+def metrics(repo):
+    return tomllib.loads((repo / "profile.toml").read_text(encoding="utf-8")).get("metrics")
+
+
+# Why: Garmin rate-limits key exchanges; a real run must build ONE client with the repo token cache
 # (keyed by GARMIN_CACHE_KEY, generated here) so the first Actions runs reuse the token.
-def test_garmin_one_client_with_repo_cache_and_expiry(repo, capsys):
+def test_discover_one_client_with_repo_cache(repo, capsys):
     garmin_ready(repo)
+    (repo / "setup.json").write_text(json.dumps({"repo": "someone/garmin-life-kit"}))
     mod = load(repo)
-    rc, out = go(mod, capsys, "garmin", "--days", "90")
+    rc = mod.main(["discover", "--days", "90"])   # not a dry run: the stub kit stands in for Garmin
+    out = capsys.readouterr().out
     assert rc == 0, out
-    clients = [c for c in mod.FAKE.calls if c[:2] == ("garmin", "Client")]
-    assert clients == [("garmin", "Client", True)]
+    made = sys.modules["kit.garmin"].Client.made
+    assert len(made) == 1 and made[0][0] == GOOD["GARMIN_PERSONAL_API_KEY"] and made[0][1].key
     assert len(read_env(repo)["GARMIN_CACHE_KEY"]) == 44
-    exp = json.loads((repo / "setup.json").read_text())["expiries"]
-    assert [e["name"] for e in exp] == ["Garmin API key (GARMIN_PERSONAL_API_KEY)"]
-    assert "Found sleep 3 of 3 days" in last(out)
+    for k in [k for k in sys.modules if k == "kit" or k.startswith("kit.")]:
+        del sys.modules[k]
 
 
-# Why: on a rate limit the only right move is to stop and wait; no retry, no expiry recorded.
+# Why: discovery writes what this account really has, one plain line each, keeping profile.toml's comments.
+def test_discover_writes_metrics_and_lines(repo):
+    garmin_ready(repo)
+    rc, out = cli(repo, "discover", "--days", "365")
+    assert rc == 0, out
+    assert metrics(repo) == {"sleep": True, "hrv": True, "stress": True, "spo2": True}
+    for line in ("Sleep: found", "HRV: found", "Weight: not available through the kit yet",
+                 "Activity types, last 14 days: running 3, cycling 1"):
+        assert line in out
+    assert last(out).startswith("OK: The Garmin key works. Found 4 of 4 kinds of data, and 4 activities")
+    text = (repo / "profile.toml").read_text(encoding="utf-8")
+    assert text.startswith(PROFILE) and text.count("[metrics]") == 1
+    s = json.loads((repo / "setup.json").read_text())
+    assert s["discovered"]["available"] == ["sleep", "hrv", "stress", "spo2"]
+    assert s["discovered"]["activity_types"] == {"running": 3, "cycling": 1}
+    assert [e["name"] for e in s["expiries"]] == ["Garmin API key (GARMIN_PERSONAL_API_KEY)"]
+
+
+# Why: the re-run rule. Gone -> off; newly found -> on; found both times but trimmed -> stays off.
+def test_discover_rerun_rule(repo, monkeypatch):
+    garmin_ready(repo)
+    cli(repo, "discover", "--days", "365")
+    p = repo / "profile.toml"
+    p.write_text(p.read_text(encoding="utf-8").replace("stress = true", "stress = false"), encoding="utf-8")
+    rc, out = cli(repo, "discover", "--days", "365")   # same device: the trim is kept
+    assert rc == 0 and metrics(repo)["stress"] is False and "Stress: found (kept off, as you set it)" in out
+    monkeypatch.setenv("KIT_DRY_FIXTURES", "garmin-sparse")   # a simpler watch
+    rc, out = cli(repo, "discover", "--days", "365")
+    assert rc == 0 and metrics(repo) == {"sleep": True, "hrv": False, "stress": False, "spo2": False}
+    assert "HRV: not found" in out and "(not found: HRV, Stress, SpO2)" in last(out)
+    monkeypatch.setenv("KIT_DRY_FIXTURES", "garmin")     # back to the full watch: newly found turns on
+    cli(repo, "discover", "--days", "365")
+    assert metrics(repo) == {"sleep": True, "hrv": True, "stress": True, "spo2": True}
+    assert (repo / "profile.toml").read_text(encoding="utf-8").count("[metrics]") == 1
+
+
+# Why: an account with nothing at all is almost always an unsynced watch; don't switch everything off.
+def test_discover_empty_account_fails_without_writing_metrics(repo, monkeypatch):
+    garmin_ready(repo)
+    monkeypatch.setenv("KIT_DRY_FIXTURES", "garmin-empty")
+    rc, out = cli(repo, "discover", "--days", "365")
+    assert rc == 1 and "Garmin sent no data" in last(out) and "syncs" in last(out)
+    assert metrics(repo) is None
+
+
+# Why: on a rate limit the only right move is to stop and wait; nothing recorded, no retry.
 @pytest.mark.parametrize("err,words", [("RateLimited", "rate limited"), ("KeyRejected", "key rejected"),
-                                       ("ExchangeFailed", "couldn't reach Garmin")])
-def test_garmin_errors_stop_without_retry(repo, capsys, err, words):
+                                       ("ExchangeFailed", "couldn't reach Garmin"),
+                                       ("GarminError", "Garmin gave an error for HRV")])
+def test_discover_errors_stop(repo, capsys, err, words):
     garmin_ready(repo)
     mod = load(repo)
     mod.FAKE.garmin_error = err
-    rc, out = go(mod, capsys, "garmin", "--days", "365")
+    rc, out = go(mod, capsys, "discover", "--days", "365")
     assert rc == 1 and last(out).startswith(f"FAILED: {words}")
-    assert len([c for c in mod.FAKE.calls if c[:2] == ("garmin", "Client")]) == 1
-    assert not (repo / "setup.json").exists()
+    assert "wait 30-60 minutes" in last(out).lower() or err != "RateLimited"
+    assert len([c for c in mod.FAKE.calls if c[:2] == ("garmin", "DryRunClient")]) == 1
+    assert not (repo / "setup.json").exists() and metrics(repo) is None
 
 
-# Why: the key's lifetime is what drives the expiry warning; it must be asked for, not guessed.
-def test_garmin_needs_days(repo):
+# Why: the key's lifetime drives the expiry warning; it must be asked for, not guessed.
+def test_discover_needs_days(repo):
     garmin_ready(repo)
-    rc, out = cli(repo, "garmin")
+    rc, out = cli(repo, "discover")
     assert rc == 1 and "--days 365" in last(out)
+
+
+# Why: old runbooks and notes say `garmin`; it must keep working as the same command.
+def test_garmin_is_an_alias(repo):
+    garmin_ready(repo)
+    rc, out = cli(repo, "garmin", "--days", "30")
+    assert rc == 0 and "profile.toml [metrics] is updated" in last(out)
+
+
+# Why: status is how Claude resumes; it must say whether discovery ran and when.
+def test_status_shows_discovery(repo):
+    garmin_ready(repo)
+    rc, out = cli(repo, "status")
+    assert "Garmin data check: not run yet" in out
+    cli(repo, "discover", "--days", "365")
+    rc, out = cli(repo, "status")
+    assert "Garmin data check: ran " in out and "(4 kinds of data found)" in out
+
+
+# Why: what they wear explains gaps; the setting must be added once and then rewritten in place.
+def test_profile_wears(repo):
+    rc, out = cli(repo, "profile", "--name", "Sam", "--wears", "Forerunner 265, HRM-Pro strap")
+    assert rc == 0, out
+    rc, out = cli(repo, "profile", "--wears", "Fenix 8")
+    text = (repo / "profile.toml").read_text(encoding="utf-8")
+    assert tomllib.loads(text)["devices"]["wears"] == "Fenix 8"
+    assert text.count("[devices]") == 1 and text.count("wears =") == 1
+
+
+@pytest.mark.skipif(not (REAL_ROOT / "kit" / "discover.py").exists(), reason="kit/discover.py not built yet")
+@pytest.mark.parametrize("fixtures", ["garmin", "garmin-sparse", "garmin-empty"])
+def test_discover_against_real_kit(repo, monkeypatch, fixtures):
+    # Why: the real kit.discover + kit.metrics + fixtures must drive the same command end to end.
+    import shutil
+    shutil.rmtree(repo / "kit")
+    shutil.copytree(REAL_ROOT / "kit", repo / "kit", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(REAL_ROOT / "tests" / "fixtures", repo / "tests" / "fixtures")
+    garmin_ready(repo)
+    monkeypatch.setenv("KIT_DRY_FIXTURES", fixtures)
+    rc, out = cli(repo, "discover", "--days", "365")
+    assert last(out).startswith(("OK:", "FAILED:")), out
+    if fixtures == "garmin-empty":   # no sleep, no activities: those switches are left alone, not turned off
+        assert rc == 0, out
+        assert "Sleep (bed, wake, hours): not checked" in out and "not checked yet and left as they were" in last(out)
+        assert "sleep" not in metrics(repo) and "hr_zones" not in metrics(repo)
+        return
+    if fixtures == "garmin-sparse":
+        assert rc == 0 and "not found" in out, out
+        return
+    if fixtures == "garmin":
+        assert rc == 0, out
+        names = subprocess.run([sys.executable, "-c", "from kit.metrics import METRICS; print(' '.join(METRICS))"],
+                               cwd=REAL_ROOT, capture_output=True, text=True, check=True).stdout.split()
+        assert set(metrics(repo)) == set(names)
+        return
+        assert set(metrics(repo)) == set(METRICS)
 
 
 # ---------- secrets ----------
@@ -620,8 +773,7 @@ sys.exit(int(os.environ.get("FAIL_" + __spec__.name.split(".")[-1].upper(), "0")
 
 
 def fake_kit(repo):
-    (repo / "kit").mkdir()
-    (repo / "kit" / "__init__.py").write_text("")
+    (repo / "kit").mkdir(exist_ok=True)
     for m in ("recap", "cards", "commands"):
         (repo / "kit" / f"{m}.py").write_text(FAKE_MODULE)
 
@@ -689,15 +841,6 @@ def test_env_file_is_per_owner_and_repo(repo):
     assert (a.name, b.name) == ("alice__garmin-life-kit.env", "bob__garmin-life-kit.env")
 
 
-# Why: a 4xx from Garmin (wrong path, 400, 404) is a real fault, not "missing data"; it must stop, named.
-def test_garmin_http_error_is_failed_and_named(repo, capsys):
-    garmin_ready(repo)
-    mod = load(repo)
-    mod.FAKE.garmin_error = "GarminError"
-    rc, out = go(mod, capsys, "garmin", "--days", "365")
-    assert rc == 1 and last(out).startswith("FAILED: Garmin gave an error for sleep") and "HTTP 404" in last(out)
-
-
 # Why: a group with Topics off is a plain "group"; the person needs "turn on Topics", not "found no group".
 def test_telegram_basic_group_says_topics_off(repo, capsys):
     telegram_ready(repo)
@@ -732,3 +875,303 @@ def test_test_picks_new_run_not_older_one(repo, capsys):
     assert rc == 0, out
     watched = next(c[1] for c in mod.FAKE.calls if c[0] == "run" and c[1][:3] == ["gh", "run", "watch"])
     assert watched[3] == "123"
+
+
+# ---------- update (real git: a template repo and a copy with no shared history) ----------
+
+def sh(cwd, *a):
+    return subprocess.run(a, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def write(root, files):
+    for name, body in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(body, encoding="utf-8")
+
+
+PROFILE_STUB = """import pathlib, tomllib
+def load():
+    d = tomllib.loads(pathlib.Path("profile.toml").read_text(encoding="utf-8"))
+    if d.get("units") not in ("imperial", "metric"):
+        raise SystemExit("units must be imperial or metric")
+    return d
+"""
+
+
+@pytest.fixture
+def kit_repos(tmp_path, monkeypatch):
+    """Template repo (2 commits) + a copy made like GitHub's "Use this template": one commit, same tree, own origin."""
+    gitcfg = tmp_path / "gitconfig"
+    gitcfg.write_text("[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitcfg))   # ignore the real user's signing/hooks settings
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    tpl, copy, origin = tmp_path / "template", tmp_path / "copy", tmp_path / "origin.git"
+    tpl.mkdir()
+    write(tpl, {"profile.toml": PROFILE, "setup/kit.py": (REAL_ROOT / "setup" / "kit.py").read_text(),
+                "kit/__init__.py": "", "kit/a.py": "VALUE = 1\n", "worker/src/index.js": "// v1\n",
+                "kit/profile.py": PROFILE_STUB,
+                "tests/test_ok.py": "def test_ok():\n    assert True\n", "data/.gitkeep": ""})
+    sh(tpl, "git", "init", "-q", "-b", "main")
+    sh(tpl, "git", "add", "-A")
+    sh(tpl, "git", "commit", "-q", "-m", "v1")
+    write(tpl, {"kit/a.py": "VALUE = 2\n"})
+    sh(tpl, "git", "commit", "-q", "-am", "v2")
+    import shutil
+    shutil.copytree(tpl, copy, ignore=shutil.ignore_patterns(".git"))
+    sh(copy, "git", "init", "-q", "-b", "main")
+    sh(copy, "git", "add", "-A")
+    sh(copy, "git", "commit", "-q", "-m", "Initial commit")
+    sh(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(origin))
+    sh(copy, "git", "remote", "add", "origin", str(origin))
+    sh(copy, "git", "push", "-q", "origin", "main")
+    # the person's own changes in their copy
+    prof = (copy / "profile.toml").read_text(encoding="utf-8").replace('name = ""                ', 'name = "Sam"             ')
+    write(copy, {"profile.toml": prof, "setup.json": '{"repo": "sam/garmin-life-kit"}\n'})
+    sh(copy, "git", "add", "-A")
+    sh(copy, "git", "commit", "-q", "-m", "Setup")
+    sh(copy, "git", "push", "-q", "origin", "main")
+    # GitHub Actions commit data/ to main every day, so origin is ahead of this computer when update runs.
+    actions = tmp_path / "actions"
+    sh(tmp_path, "git", "clone", "-q", str(origin), str(actions))
+    write(actions, {"data/log.jsonl": '{"text": "slept badly"}\n'})
+    sh(actions, "git", "add", "-A")
+    sh(actions, "git", "commit", "-q", "-m", "data")
+    sh(actions, "git", "push", "-q", "origin", "main")
+    return tpl, copy, origin
+
+
+def upstream(tpl, files, msg="upstream"):
+    write(tpl, files)
+    sh(tpl, "git", "add", "-A")
+    sh(tpl, "git", "commit", "-q", "-m", msg)
+
+
+def update(copy, *extra):
+    p = subprocess.run([sys.executable, str(copy / "setup" / "kit.py"), "update", *extra], cwd=copy,
+                       capture_output=True, text=True, env=os.environ.copy(), timeout=600)
+    return p.returncode, p.stdout + p.stderr
+
+
+def drop_grafts(copy):
+    for ref in sh(copy, "git", "for-each-ref", "--format=%(refname:short)", "refs/replace/").split():
+        sh(copy, "git", "replace", "-d", ref.split("/")[-1])
+
+
+# Why: the whole point: upstream code arrives, the person's profile/setup survive (even where the
+# template changed a default), new settings appear with defaults, history gets linked, and it's pushed.
+def test_update_merges_template_into_copy(kit_repos):
+    tpl, copy, origin = kit_repos
+    new_profile = PROFILE.replace('morning = "07:30"', 'morning = "07:00"').replace(
+        "watchdog = true\n", "watchdog = true\nnew_toggle = true             # added upstream\n")
+    new_profile += '\n[later]                       # a new section\nthing = "x"\n'
+    upstream(tpl, {"kit/a.py": "VALUE = 3\n", "worker/src/index.js": "// v3\n", "profile.toml": new_profile})
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 0, out
+    assert "Linked this copy to the public kit's history" in out
+    assert "The Worker changed: run uv run setup/kit.py worker next." in last(out)
+    assert "features.new_toggle" in last(out) and "[later]" in last(out)
+    assert (copy / "kit" / "a.py").read_text() == "VALUE = 3\n"
+    text = (copy / "profile.toml").read_text(encoding="utf-8")
+    p = tomllib.loads(text)
+    assert p["name"] == "Sam" and p["times"]["morning"] == "07:30"          # theirs kept, not the new default
+    assert p["features"]["new_toggle"] is True and p["later"]["thing"] == "x"
+    assert "new_toggle = true             # added upstream" in text
+    assert json.loads((copy / "setup.json").read_text()) == {"repo": "sam/garmin-life-kit"}
+    assert (copy / "data" / "log.jsonl").exists()   # the Actions commit came in first
+    assert sh(copy, "git", "status", "--porcelain") == ""
+    assert sh(origin, "git", "rev-parse", "main") == sh(copy, "git", "rev-parse", "HEAD")
+    drop_grafts(copy)   # the merge commit itself now links the histories
+    assert sh(copy, "git", "merge-base", "HEAD", "template/main") == sh(tpl, "git", "rev-parse", "HEAD")
+
+
+# Why: the second update must work from the merge commit alone (grafts are local-only and not pushed).
+def test_second_update_without_graft(kit_repos):
+    tpl, copy, origin = kit_repos
+    upstream(tpl, {"kit/a.py": "VALUE = 3\n"})
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 0, out
+    drop_grafts(copy)
+    upstream(tpl, {"kit/a.py": "VALUE = 4\n"})
+    rc, out = update(copy)   # remote already there
+    assert rc == 0, out
+    assert "Linked" not in out and "No Worker changes, so nothing else to run." in last(out)
+    assert (copy / "kit" / "a.py").read_text() == "VALUE = 4\n"
+    rc, out = update(copy)
+    assert rc == 0 and last(out) == "OK: Already up to date with the public kit. Nothing changed."
+    write(copy, {"kit/c.py": "X = 1\n"})   # a local commit not pushed yet
+    sh(copy, "git", "add", "-A")
+    sh(copy, "git", "commit", "-q", "-m", "local")
+    rc, out = update(copy)
+    assert rc == 0 and "Pushed the commits that were waiting here" in last(out)
+    assert sh(origin, "git", "rev-parse", "main") == sh(copy, "git", "rev-parse", "HEAD")
+
+
+# Why: a code clash must never leave a half-merged repo; it aborts, lists the file, changes nothing.
+def test_update_conflict_aborts_clean(kit_repos):
+    tpl, copy, origin = kit_repos
+    sh(copy, "git", "pull", "-q", "--ff-only", "origin", "main")
+    write(copy, {"kit/a.py": "VALUE = 99\n"})
+    sh(copy, "git", "commit", "-q", "-am", "my tweak")
+    before = sh(copy, "git", "rev-parse", "HEAD")
+    upstream(tpl, {"kit/a.py": "VALUE = 3\n"})
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 1 and "clashes with changes made in this copy, in: kit/a.py" in last(out)
+    assert sh(copy, "git", "rev-parse", "HEAD") == before
+    assert sh(copy, "git", "status", "--porcelain") == ""
+    assert not (copy / ".git" / "MERGE_HEAD").exists()
+
+
+# Why: an update that breaks the tests must be undone, not pushed.
+def test_update_red_tests_resets(kit_repos):
+    tpl, copy, origin = kit_repos
+    before = sh(origin, "git", "rev-parse", "main")
+    upstream(tpl, {"tests/test_bad.py": "def test_bad():\n    assert False\n", "kit/a.py": "VALUE = 3\n"})
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 1 and "made the kit's tests fail, so I undid it" in last(out)
+    assert sh(copy, "git", "rev-parse", "HEAD") == before
+    assert sh(origin, "git", "rev-parse", "main") == before
+    assert (copy / "kit" / "a.py").read_text() == "VALUE = 2\n"
+
+
+# Why: uncommitted work must never be mixed into (or lost by) an update.
+def test_update_needs_clean_tree(kit_repos):
+    tpl, copy, origin = kit_repos
+    write(copy, {"kit/a.py": "VALUE = 7\n"})
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 1 and "aren't committed" in last(out)
+    assert (copy / "kit" / "a.py").read_text() == "VALUE = 7\n"
+
+
+# Why: a copy that doesn't match any template commit can't be grafted safely; say so, change nothing.
+def test_update_no_matching_template_commit(tmp_path, kit_repos):
+    tpl, copy, origin = kit_repos
+    other = tmp_path / "other"
+    import shutil
+    shutil.copytree(tpl, other, ignore=shutil.ignore_patterns(".git"))
+    write(other, {"kit/a.py": "VALUE = 42\n"})
+    sh(other, "git", "init", "-q", "-b", "main")
+    sh(other, "git", "add", "-A")
+    sh(other, "git", "commit", "-q", "-m", "Initial commit")
+    sh(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(tmp_path / "other.git"))
+    sh(other, "git", "remote", "add", "origin", str(tmp_path / "other.git"))
+    sh(other, "git", "push", "-q", "origin", "main")
+    rc, out = update(other, "--template", str(tpl))
+    assert rc == 1 and "couldn't match this copy to the public kit's history" in last(out)
+    assert "keeping profile.toml, setup.json, data/ and worker/wrangler.toml" in last(out)
+
+
+
+# Why: grafts are local-only. A fresh clone of the pushed copy must be sound and still linked to the
+# template's history with no replace ref at all, or the next update on another computer breaks.
+def test_update_fresh_clone_is_linked_without_graft(tmp_path, kit_repos):
+    tpl, copy, origin = kit_repos
+    upstream(tpl, {"kit/a.py": "VALUE = 3\n"})
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 0 and "Linked" in out, out
+    fresh = tmp_path / "fresh"
+    sh(tmp_path, "git", "clone", "-q", str(origin), str(fresh))
+    assert subprocess.run(["git", "fsck", "--no-progress"], cwd=fresh, capture_output=True).returncode == 0
+    sh(fresh, "git", "remote", "add", "template", str(tpl))
+    sh(fresh, "git", "fetch", "-q", "template")
+    assert sh(fresh, "git", "for-each-ref", "refs/replace/") == ""
+    assert sh(fresh, "git", "merge-base", "HEAD", "template/main") == sh(tpl, "git", "rev-parse", "HEAD")
+
+
+# Why: local commits AND new commits on GitHub can't be fast-forwarded; stop before touching anything.
+def test_update_stops_when_diverged_from_origin(kit_repos):
+    tpl, copy, origin = kit_repos
+    write(copy, {"kit/b.py": "B = 1\n"})
+    sh(copy, "git", "add", "-A")
+    sh(copy, "git", "commit", "-q", "-m", "local only")
+    before = sh(copy, "git", "rev-parse", "HEAD")
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 1 and "both have changes" in last(out) and "git pull origin main" in last(out)
+    assert sh(copy, "git", "rev-parse", "HEAD") == before
+
+
+# Why: updating any branch but main would push the wrong thing or merge into a side branch.
+def test_update_only_on_main(kit_repos):
+    tpl, copy, origin = kit_repos
+    sh(copy, "git", "checkout", "-q", "-b", "side")
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 1 and "on side, not main" in last(out)
+
+
+# Why: a merge left over from an earlier run must be cleaned up by a person, not built upon.
+def test_update_refuses_stale_merge_head(kit_repos):
+    tpl, copy, origin = kit_repos
+    (copy / ".git" / "MERGE_HEAD").write_text(sh(copy, "git", "rev-parse", "HEAD") + "\n")
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 1 and "Run: git merge --abort" in last(out)
+
+
+# Why: an update whose kit rejects the person's profile would break every recap; undo it, push nothing.
+def test_update_resets_when_profile_no_longer_loads(kit_repos):
+    tpl, copy, origin = kit_repos
+    before = sh(origin, "git", "rev-parse", "main")
+    upstream(tpl, {"kit/profile.py": PROFILE_STUB.replace('("imperial", "metric")', '("metric",)')})
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 1 and "no longer accepts profile.toml" in last(out) and "units must be" in last(out)
+    assert sh(copy, "git", "rev-parse", "HEAD") == before == sh(origin, "git", "rev-parse", "main")
+    assert sh(copy, "git", "status", "--porcelain") == ""
+
+
+# Why: anything that blows up mid-merge (here a broken line in the template's profile) must abort the merge.
+def test_update_aborts_merge_on_unexpected_error(kit_repos):
+    tpl, copy, origin = kit_repos
+    before = sh(origin, "git", "rev-parse", "main")
+    upstream(tpl, {"profile.toml": PROFILE.replace("watchdog = true\n", "watchdog = true\nbroken =\n"),
+                   "kit/a.py": "VALUE = 3\n"})
+    rc, out = update(copy, "--template", str(tpl))
+    assert rc == 1 and "\nFAILED: something unexpected went wrong" in out
+    assert sh(copy, "git", "rev-parse", "HEAD") == before
+    assert not (copy / ".git" / "MERGE_HEAD").exists() and sh(copy, "git", "status", "--porcelain") == ""
+
+
+# Why: every v0.1 copy has no "discovered" record; a metric they already turned off must stay off.
+def test_discover_keeps_explicit_false_without_history(repo):
+    garmin_ready(repo)
+    p = repo / "profile.toml"
+    p.write_text(p.read_text(encoding="utf-8") + "\n[metrics]\nstress = false\n", encoding="utf-8")
+    rc, out = cli(repo, "discover", "--days", "365")
+    assert rc == 0, out
+    assert metrics(repo) == {"stress": False, "sleep": True, "hrv": True, "spo2": True}
+    assert "Stress: found (kept off, as you set it)" in out
+
+
+# Why: with no sleep record there's nothing to judge by; "unknown" switches must stay exactly as set,
+# say "not checked", and the run fails asking for a sync instead of switching things off.
+def test_discover_unknown_left_alone(repo, monkeypatch):
+    garmin_ready(repo)
+    p = repo / "profile.toml"
+    p.write_text(p.read_text(encoding="utf-8") + "\n[metrics]\nhrv = false\nsleep = true\n", encoding="utf-8")
+    before = p.read_text(encoding="utf-8")
+    monkeypatch.setenv("KIT_DRY_FIXTURES", "garmin-empty")
+    rc, out = cli(repo, "discover", "--days", "365")
+    assert rc == 1 and "Garmin sent no data" in last(out)
+    assert p.read_text(encoding="utf-8") == before
+
+
+def test_discover_unknown_not_counted(repo, capsys):
+    # Why: an unknown metric is neither found nor missing; it is printed as not checked and keeps its value.
+    garmin_ready(repo)
+    p = repo / "profile.toml"
+    p.write_text(p.read_text(encoding="utf-8") + "\n[metrics]\nspo2 = false\n", encoding="utf-8")
+    mod = load(repo)
+    import types as _t
+    real = mod.import_kit
+    def fake_import(*names):
+        mods = real(*names)
+        d = _t.SimpleNamespace(run=lambda c, t: {"available": ["sleep", "hrv"], "missing": ["stress"],
+                                                 "unknown": {"spo2": "no activities to judge by"},
+                                                 "activity_types": {}, "not_in_kit": {"weight": "not available through the kit yet"}})
+        return [d if n == "discover" else m for n, m in zip(names, mods)]
+    mod.import_kit = fake_import
+    rc, out = go(mod, capsys, "discover", "--days", "365")
+    assert rc == 0, out
+    assert "SpO2: not checked (no activities to judge by)" in out and "Stress: not found" in out
+    assert "Found 2 of 4 kinds of data (not found: Stress); 1 not checked yet" in last(out)
+    assert metrics(repo) == {"spo2": False, "sleep": True, "hrv": True, "stress": False}
+    for k in [k for k in sys.modules if k == "kit" or k.startswith("kit.")]:
+        del sys.modules[k]

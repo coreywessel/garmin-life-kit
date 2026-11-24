@@ -97,6 +97,12 @@ def fallback(mode, ctx, note="Plain numbers today: Claude didn't write this one.
             bits.append(s["vs_target"])
         if bits:
             lines.append("Sleep: " + " · ".join(bits))
+        st = s.get("stages") or {}
+        bits = [" / ".join(f"{k} {v}" for k, v in st.items()) if st else None,
+                f"breathing {s['breathing_per_min']}/min" if "breathing_per_min" in s else None,
+                f"SpO2 {s['spo2_pct']}%" if "spo2_pct" in s else None]
+        if any(bits):
+            lines.append("Sleep detail: " + " · ".join(x for x in bits if x))
         h = ctx.get("hrv") or {}
         bits = [f"{h['last_night_ms']} ms" + (f" (7-day avg {h['avg_7_ms']})" if "avg_7_ms" in h else "")
                 if "last_night_ms" in h else None,
@@ -120,6 +126,8 @@ def fallback(mode, ctx, note="Plain numbers today: Claude didn't write this one.
         acts = ctx.get("yesterday_activities") or []
         if acts:
             lines.append("Yesterday's activities: " + "; ".join(esc(numbers.describe(a)) for a in acts))
+        if "vo2max" in ctx:
+            lines.append(f"VO2 max: {ctx['vo2max']}")
         lines += [x for x in (_week_line(ctx), _weather_line("Weather", ctx.get("weather_today"))) if x]
     else:
         acts = ctx.get("today_activities") or []

@@ -15,7 +15,7 @@ and never saves the seen list.
 import json
 import sys
 
-from kit import fetch, garmin, numbers, profile, telegram
+from kit import fetch, garmin, metrics, numbers, profile, telegram
 from kit.telegram import esc
 
 KEEP = 500
@@ -42,19 +42,13 @@ def save_seen(ids):
     path.write_text(json.dumps({"ids": sorted(ids)[-KEEP:]}) + "\n", encoding="utf-8")
 
 
-def zones(a):
-    z = [a.get(f"hrTimeInZone_{i}") or 0 for i in range(1, 6)]
-    total = sum(z)
-    if not total:
-        return None
-    pct = lambda x: round(100 * x / total)
-    return f"Zones: Z1-2 {pct(z[0] + z[1])}% · Z3 {pct(z[2])}% · Z4-5 {pct(z[3] + z[4])}%"
-
-
-def card(a, units=None):
-    """Everything worth knowing about one activity (a slim dict), readable without opening Garmin."""
-    units = units or profile.load()["units"]
-    n = numbers.activity(a, units)
+def card(a, units=None, on=None):
+    """Everything worth knowing about one activity (a slim dict), readable without opening Garmin.
+    Zones, training effect, load and VO2 max appear only when their metric is on and present."""
+    if units is None or on is None:
+        p = profile.load()
+        units, on = units or p["units"], metrics.enabled(p) if on is None else on
+    n = numbers.activity(a, units, on, detail=True)
     lines = [f"<b>{esc(n['name'])}</b>" + (f" · {n['start']}" if n.get("start") else "")]
     main = [n.get(k) for k in ("distance", "time", "pace", "avg_speed")]
     if any(main):
@@ -69,17 +63,14 @@ def card(a, units=None):
           f"+{n['climb']}" if n.get("climb") else None]
     if any(hr):
         lines.append(" · ".join(x for x in hr if x))
-    if zones(a):
-        lines.append(zones(a))
-    te = []
-    if a.get("aerobicTrainingEffect"):
-        te.append(f"Effect {a['aerobicTrainingEffect']:.1f} aerobic / {a.get('anaerobicTrainingEffect') or 0:.1f} anaerobic")
-    if a.get("activityTrainingLoad"):
-        te.append(f"load {a['activityTrainingLoad']:.0f}")
-    if a.get("calories"):
-        te.append(f"{a['calories']:.0f} cal")
-    if te:
-        lines.append(" · ".join(te))
+    if n.get("zones"):
+        lines.append(f"Zones: {n['zones']}")
+    te = [f"Effect {n['effect']}" if n.get("effect") else None,
+          f"load {n['load']}" if n.get("load") else None,
+          f"VO2 max {n['vo2max']}" if n.get("vo2max") else None,
+          f"{a['calories']:.0f} cal" if a.get("calories") else None]
+    if any(te):
+        lines.append(" · ".join(x for x in te if x))
     return "\n".join(lines)
 
 
@@ -111,7 +102,7 @@ def run():
         return 0
     for a in new:
         try:
-            telegram.send("fitness", card(a, p["units"]), silent=True)
+            telegram.send("fitness", card(a, p["units"], metrics.enabled(p)), silent=True)
         except telegram.TelegramError as e:
             profile.fail(f"Activity card not sent. {e}")
         seen.add(a["activityId"])

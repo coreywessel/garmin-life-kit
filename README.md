@@ -22,6 +22,10 @@ A Telegram group with four topics:
 | Log | Type anything here (how you feel, a sore knee, a late night). It gets a 👍 and the recaps take it into account. |
 | Alerts | Only when something breaks or a key is about to expire, with the fix. Quiet means it's working. |
 
+Every watch records different things. During setup the kit checks what your Garmin data
+actually includes (HRV, sleep stages, Body Battery, VO2 max and so on) and only shows that.
+Want less? Say "drop stress" and it's gone.
+
 Commands (type them in the group): `/today`, `/week`, `/last`, `/status`, `/help`.
 
 Optional: connect Claude straight to your Garmin data, so you can ask it things like
@@ -57,8 +61,15 @@ All of it runs in the cloud on free tiers, so your computer can be off:
 GitHub Actions does the work, a small Cloudflare Worker keeps the clock and answers Telegram,
 Claude writes the words. How it fits together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Getting improvements later
+
+This kit gets better over time. To pull the newest version into your copy, open Claude Code in
+your `garmin-life-kit` folder and say: **pull the latest updates from coreywessel/garmin-life-kit**.
+Claude merges the changes, keeps your settings and notes, checks everything still works, and
+puts it live. Your keys are never touched.
+
 ## Changing things later
 
 Open Claude Code in your copy of the kit and ask in plain words: "move the morning recap to
-6:45", "switch to metric", "turn off the weather". Everything about you lives in one file,
+6:45", "switch to metric", "drop stress from my recaps", "I got a new watch". Everything about you lives in one file,
 `profile.toml`.

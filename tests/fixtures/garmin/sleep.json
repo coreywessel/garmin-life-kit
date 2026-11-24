@@ -139,7 +139,9 @@
     "startGMT": "2026-01-07T09:00:00.0",
     "activityLevel": 2
    }
-  ]
+  ],
+  "averageSpO2Value": 95.0,
+  "lowestSpO2Value": 89
  },
  "2026-01-08": {
   "calendarDate": "2026-01-08",
@@ -281,7 +283,9 @@
     "startGMT": "2026-01-08T09:00:00.0",
     "activityLevel": 2
    }
-  ]
+  ],
+  "averageSpO2Value": 95.0,
+  "lowestSpO2Value": 89
  },
  "2026-01-09": {
   "calendarDate": "2026-01-09",
@@ -423,7 +427,9 @@
     "startGMT": "2026-01-09T09:00:00.0",
     "activityLevel": 2
    }
-  ]
+  ],
+  "averageSpO2Value": 95.0,
+  "lowestSpO2Value": 89
  },
  "2026-01-10": {
   "calendarDate": "2026-01-10",
@@ -565,7 +571,9 @@
     "startGMT": "2026-01-10T09:00:00.0",
     "activityLevel": 2
    }
-  ]
+  ],
+  "averageSpO2Value": 95.0,
+  "lowestSpO2Value": 89
  },
  "2026-01-11": {
   "calendarDate": "2026-01-11",
@@ -707,7 +715,9 @@
     "startGMT": "2026-01-11T09:00:00.0",
     "activityLevel": 2
    }
-  ]
+  ],
+  "averageSpO2Value": 95.0,
+  "lowestSpO2Value": 89
  },
  "2026-01-12": {
   "calendarDate": "2026-01-12",
@@ -849,7 +859,9 @@
     "startGMT": "2026-01-12T09:00:00.0",
     "activityLevel": 2
    }
-  ]
+  ],
+  "averageSpO2Value": 95.0,
+  "lowestSpO2Value": 89
  },
  "2026-01-13": {
   "calendarDate": "2026-01-13",
@@ -991,7 +1003,9 @@
     "startGMT": "2026-01-13T09:00:00.0",
     "activityLevel": 2
    }
-  ]
+  ],
+  "averageSpO2Value": 95.0,
+  "lowestSpO2Value": 89
  },
  "2026-01-14": {
   "calendarDate": "2026-01-14",
@@ -1133,6 +1147,8 @@
     "startGMT": "2026-01-14T09:00:00.0",
     "activityLevel": 2
    }
-  ]
+  ],
+  "averageSpO2Value": 95.0,
+  "lowestSpO2Value": 89
  }
 }

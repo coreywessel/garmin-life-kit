@@ -241,13 +241,28 @@ class Client:
         return self._get("/usersummary-service/usersummary/daily", calendarDate=_iso(d)) or {}
 
 
-class DryRunClient:
-    """Same methods, answered from tests/fixtures/garmin (invented data, never real).
-    Used when KIT_DRY_RUN=1. The fixtures' today is profile.FIXTURE_TODAY."""
+def fixtures_dir():
+    """KIT_DRY_FIXTURES picks the fixture folder: a name under tests/fixtures ("garmin-sparse",
+    "garmin-empty") or a path. Default: the full set."""
+    v = os.environ.get("KIT_DRY_FIXTURES", "").strip()
+    if not v:
+        return FIXTURES
+    path = Path(v).expanduser()
+    return path if path.is_absolute() or len(path.parts) > 1 else FIXTURES.parent / v
 
-    def __init__(self, folder=FIXTURES):
-        self._f = {n: json.loads((Path(folder) / f"{n}.json").read_text(encoding="utf-8"))
-                   for n in ("activities", "sleep", "hrv", "summary")}
+
+class DryRunClient:
+    """Same methods, answered from invented fixtures (never real data): tests/fixtures/garmin,
+    or the folder KIT_DRY_FIXTURES names. Used when KIT_DRY_RUN=1. Their today is FIXTURE_TODAY."""
+
+    def __init__(self, folder=None):
+        folder = folder or fixtures_dir()
+        try:
+            self._f = {n: json.loads((Path(folder) / f"{n}.json").read_text(encoding="utf-8"))
+                       for n in ("activities", "sleep", "hrv", "summary")}
+        except OSError as e:
+            raise GarminError(f"dry-run fixtures not found in {folder} ({e.strerror})",
+                              "set KIT_DRY_FIXTURES to garmin, garmin-sparse, garmin-empty or a folder path") from None
 
     def activities(self, start_date, end_date):
         s, e = _iso(start_date), _iso(end_date)

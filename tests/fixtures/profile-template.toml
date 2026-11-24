@@ -28,3 +28,24 @@ sleep_target_bed = ""         # optional "22:30": morning says how far from it y
 about = """
 """                           # optional plain sentences that help the recap read your data
                               # ("I snowboard most weekends", "night shifts on Tuesdays")
+
+[devices]
+wears = ""                    # what you wear, e.g. "Forerunner 265, HRM-Pro strap". Explains gaps.
+
+[metrics]                     # written by `uv run setup/kit.py discover`. true = shown in recaps,
+                              # cards and the MCP tools. To hide one, set it to false ("drop stress").
+                              # Re-run discover after getting a new device.
+sleep = true
+sleep_stages = true
+sleep_score = true
+hrv = true
+resting_hr = true
+body_battery = true
+stress = true
+steps = true
+respiration = true
+spo2 = true
+vo2max = true
+training_load = true
+training_effect = true
+hr_zones = true

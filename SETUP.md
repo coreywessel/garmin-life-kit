@@ -280,7 +280,20 @@ with a hello from the bot?"
 - Changing a group to Topics can change its id. If the person turned Topics on after sending
   hi, ask them to send a new message and run again.
 
-## Step 7 — Garmin API key
+## Step 7 — Garmin: your devices, the API key, and what your data includes
+
+### 7a. Ask what they wear
+
+**Ask:** "Which Garmin devices do you use? Your watch model, and any Garmin scale or heart
+rate strap." This only sets expectations: different watches record different things (some
+have no HRV or sleep stages, a strap adds better heart rate data, the kit can't read scale
+weight yet). Save their answer:
+
+```
+uv run setup/kit.py profile --wears "Forerunner 265, HRM-Pro strap"
+```
+
+### 7b. The API key
 
 **Tell the person:**
 1. "On your computer, open **connect.garmin.com/app/settings/personalApiToken** and sign in
@@ -294,25 +307,39 @@ with a hello from the bot?"
    uv run setup/kit.py secret GARMIN_PERSONAL_API_KEY
    ```
 
+Ask them to open the Garmin Connect app on their phone first so the watch has synced.
+
+### 7c. Find out what their data includes
+
 **You run** (N = the number of days they told you):
 
 ```
-uv run setup/kit.py garmin --days N
+uv run setup/kit.py discover --days N
 ```
 
-It swaps the key for a token, pulls the last 3 days and shows what came back: sleep, HRV,
-resting heart rate, activities.
+It swaps the key for a token **once**, samples the last 14 days (about 10 small requests), and
+lists every kind of data that came back: sleep, sleep stages, sleep score, HRV, resting heart
+rate, Body Battery, stress, steps, breathing rate, SpO2, VO2 max, training load, training
+effect, heart rate zones, and the activity types they've recorded. It turns on everything
+that has data in `profile.toml` (`[metrics]`) and turns off the rest. Recaps, cards and
+commands only ever show what's turned on.
 
-**Verify:** ends with `OK:`. Tell them in a line what it found ("I can see last night's sleep,
-your HRV, and 4 activities from the last two weeks").
+**Verify:** ends with `OK:`. Tell them in two or three lines what it found, in plain words,
+and explain any gap using their devices from 7a ("Your Instinct doesn't record HRV, so the
+recap leaves it out"). Then ask: "Anything here you'd rather not see in your recaps?" If they
+name something, set that metric to `false` under `[metrics]` in `profile.toml`.
 
 **If it fails:**
-- "key rejected": wrong or partial copy, or deleted. Make a new key (same page) and redo 7.4.
+- "key rejected": wrong or partial copy, or deleted. Make a new key (same page) and redo 7b.4.
 - "rate limited": Garmin limits how often a key can be swapped. Wait 30-60 minutes, then run
-  `garmin` again. Don't retry in a loop.
-- Sleep or HRV "missing": the watch may not have synced, or that watch doesn't record it. Ask
-  them to open the Garmin Connect app on their phone so it syncs, then run again. Missing data
-  is fine; the recap says "no data" for it.
+  `discover` once more. **Never retry in a loop.**
+- "Garmin gave an error for ...": not something they did. Run it once more in a few minutes;
+  if it repeats, the kit needs a fix.
+- "Garmin sent no data for the days checked": the watch hasn't synced. Ask them to open the
+  Garmin Connect app on their phone, wait a minute, then run `discover` once more.
+- Very little found (no sleep at all): they may not wear the watch at night, or the watch
+  doesn't record it. Missing data is fine: the recaps simply leave it out. They can re-run
+  discovery any time.
 - The page doesn't exist or has no API key option: tell them, and stop here. The kit needs
   this key. (Garmin decides who gets it; this is the one thing you can't work around.)
 

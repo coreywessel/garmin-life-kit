@@ -23,6 +23,8 @@ Write one message. Each line starts with a bold label. Skip any line whose numbe
 <b>Plan:</b> only if context.plan exists and is not null. Copy it as given.
 If a note explains a number, add one short line linking them, in your own words. No advice.
 
+A number that isn't in the context does not exist: never mention it, never say it's missing, never write "no data" or "n/a". If a line has nothing left, leave the whole line out.
+
 If context.garmin says "unavailable today", write the first line, "Garmin data didn't come through today (details in Alerts).", then the Tomorrow and Bed target lines if present.
 
 Format rules:

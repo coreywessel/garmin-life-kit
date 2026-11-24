@@ -28,7 +28,8 @@
   "hrTimeInZone_2": 1100,
   "hrTimeInZone_3": 300,
   "hrTimeInZone_4": 30,
-  "hrTimeInZone_5": 0
+  "hrTimeInZone_5": 0,
+  "vO2MaxValue": 52.0
  },
  {
   "activityId": 9000000106,
@@ -210,6 +211,7 @@
   "hrTimeInZone_2": 1100,
   "hrTimeInZone_3": 480,
   "hrTimeInZone_4": 130,
-  "hrTimeInZone_5": 0
+  "hrTimeInZone_5": 0,
+  "vO2MaxValue": 51.0
  }
 ]

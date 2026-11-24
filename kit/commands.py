@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-from kit import cards, expiry, fetch, garmin, numbers, profile, telegram
+from kit import cards, expiry, fetch, garmin, metrics, numbers, profile, telegram
 from kit.telegram import esc
 
 WORKFLOWS = {"recap.yml": "Recap", "collect.yml": "Collect", "command.yml": "Commands", "watchdog.yml": "Watchdog"}
@@ -42,22 +42,25 @@ def day_label(d):
 
 
 def cmd_today(p, today):
+    on = metrics.enabled(p)
     c = client()
     t = today.isoformat()
-    rec = garmin_call(c.sleep, t)
-    summary = garmin_call(c.daily_summary, t)
+    rec = garmin_call(c.sleep, t) if on & {"sleep", "sleep_score"} else {}
+    summary = garmin_call(c.daily_summary, t) if "steps" in on else {}
     acts = [fetch.slim(a) for a in garmin_call(c.activities, t, t)]
     lines = [f"<b>Today</b> · {day_label(today)}"]
-    n = numbers.night(rec)
+    n = numbers.night(rec) if "sleep" in on else None
+    score = metrics.sleep_score({"sleep": rec}) if "sleep_score" in on else None
     if n:
-        score = numbers._num(((rec.get("sleepScores") or {}).get("overall") or {}).get("value"))
         lines.append(f"Last night: {profile.time12(n['bed'])} to {profile.time12(n['wake'])}, {n['hours']} h"
                      + (f", score {score}" if score is not None else ""))
-    steps = numbers._num(summary.get("totalSteps"))
+    elif score is not None:
+        lines.append(f"Sleep score: {score}")
+    steps = metrics.steps({"summary": summary}) if "steps" in on else None
     if steps is not None:
         lines.append(f"Steps so far: {steps:,}")
     for a in sorted(acts, key=lambda a: a.get("startTimeLocal", "")):
-        lines.append(esc(numbers.describe(numbers.activity(a, p["units"]))))
+        lines.append(esc(numbers.describe(numbers.activity(a, p["units"], on))))
     if not acts:
         lines.append("No activities on Garmin yet today.")
     return "\n".join(lines)
@@ -86,7 +89,7 @@ def cmd_last(p, today):
     acts = garmin_call(client().latest_activities, 1)
     if not acts:
         return "No activities on Garmin yet."
-    return cards.card(fetch.slim(acts[0]), p["units"])
+    return cards.card(fetch.slim(acts[0]), p["units"], metrics.enabled(p))
 
 
 # ---------- /status ----------

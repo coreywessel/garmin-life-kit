@@ -55,3 +55,27 @@ def test_setup_missing_is_empty_dict(monkeypatch, kit_env):
     """No setup.json yet is {} (runtime code then says which setup step is missing)."""
     monkeypatch.setattr(profile, "SETUP", kit_env / "nope.json")
     assert profile.setup() == {}
+
+
+def test_unknown_metric_is_a_warning_not_an_error(tmp_path, capsys):
+    """After an update renames a metric, the old name must warn (naming valid ones), never stop recaps."""
+    path = write_profile(tmp_path / "m.toml")
+    path.write_text(path.read_text() + "\n[metrics]\nhrv = false\nstres = false\n")
+    p = profile.load(path)
+    err = capsys.readouterr().err
+    assert "stres" in err and "stress" in err and "body_battery" in err
+    assert "stres" not in p["metrics"] and p["metrics"]["hrv"] is False and p["metrics"]["stress"] is True
+
+
+def test_metric_must_be_true_or_false(tmp_path):
+    """'hrv = "no"' is an error, not a truthy string that leaves HRV on."""
+    path = write_profile(tmp_path / "m.toml")
+    path.write_text(path.read_text() + '\n[metrics]\nhrv = "no"\n')
+    with pytest.raises(profile.ProfileError, match="metrics.hrv must be true or false"):
+        profile.load(path)
+
+
+def test_missing_metrics_section_means_all_on(tmp_path):
+    """Profiles from before v0.2 have no [metrics]: everything stays on."""
+    p = profile.load(write_profile(tmp_path / "old.toml"))
+    assert all(p["metrics"].values()) and len(p["metrics"]) == 14 and p["devices"]["wears"] == ""

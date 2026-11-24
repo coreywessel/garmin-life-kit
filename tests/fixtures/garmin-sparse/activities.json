@@ -1,0 +1,145 @@
+[
+ {
+  "activityId": 9000000107,
+  "activityName": "Morning Run",
+  "activityType": {
+   "typeKey": "running",
+   "typeId": 1
+  },
+  "startTimeLocal": "2026-01-14 06:05:30",
+  "startTimeGMT": "2026-01-14 06:05:30",
+  "distance": 5150.0,
+  "duration": 1680.0,
+  "elapsedDuration": 1800.0,
+  "averageSpeed": 3.065,
+  "maxSpeed": 3.8,
+  "averageHR": 144,
+  "maxHR": 160,
+  "calories": 350,
+  "elevationGain": 30.0,
+  "elevationLoss": 29.0,
+  "lapCount": 3
+ },
+ {
+  "activityId": 9000000106,
+  "activityName": "Evening Ride",
+  "activityType": {
+   "typeKey": "cycling",
+   "typeId": 1
+  },
+  "startTimeLocal": "2026-01-13 17:40:00",
+  "startTimeGMT": "2026-01-13 17:40:00",
+  "distance": 24140.2,
+  "duration": 3300.0,
+  "elapsedDuration": 3420.0,
+  "averageSpeed": 7.315,
+  "maxSpeed": 12.6,
+  "averageHR": 139,
+  "maxHR": 161,
+  "calories": 690,
+  "elevationGain": 210.0,
+  "elevationLoss": 205.0,
+  "lapCount": 2
+ },
+ {
+  "activityId": 9000000105,
+  "activityName": "Strength",
+  "activityType": {
+   "typeKey": "strength_training",
+   "typeId": 1
+  },
+  "startTimeLocal": "2026-01-13 12:15:00",
+  "startTimeGMT": "2026-01-13 12:15:00",
+  "distance": 0.0,
+  "duration": 2700.0,
+  "elapsedDuration": 2820.0,
+  "averageHR": 118,
+  "maxHR": 149,
+  "calories": 260,
+  "lapCount": 1
+ },
+ {
+  "activityId": 9000000104,
+  "activityName": "City Running",
+  "activityType": {
+   "typeKey": "running",
+   "typeId": 1
+  },
+  "startTimeLocal": "2026-01-12 06:50:10",
+  "startTimeGMT": "2026-01-12 06:50:10",
+  "distance": 8046.7,
+  "duration": 2580.0,
+  "elapsedDuration": 2700.0,
+  "averageSpeed": 3.119,
+  "maxSpeed": 4.4,
+  "averageHR": 151,
+  "maxHR": 172,
+  "calories": 560,
+  "elevationGain": 52.0,
+  "elevationLoss": 50.0,
+  "lapCount": 5
+ },
+ {
+  "activityId": 9000000103,
+  "activityName": "Long Run",
+  "activityType": {
+   "typeKey": "running",
+   "typeId": 1
+  },
+  "startTimeLocal": "2026-01-11 08:05:00",
+  "startTimeGMT": "2026-01-11 08:05:00",
+  "distance": 16093.4,
+  "duration": 5460.0,
+  "elapsedDuration": 5580.0,
+  "averageSpeed": 2.947,
+  "maxSpeed": 3.9,
+  "averageHR": 149,
+  "maxHR": 168,
+  "calories": 1040,
+  "elevationGain": 120.0,
+  "elevationLoss": 118.0,
+  "lapCount": 10
+ },
+ {
+  "activityId": 9000000102,
+  "activityName": "Pine Ridge Snowboard (12 Runs)",
+  "activityType": {
+   "typeKey": "resort_snowboarding",
+   "typeId": 1
+  },
+  "startTimeLocal": "2026-01-10 09:12:40",
+  "startTimeGMT": "2026-01-10 09:12:40",
+  "distance": 31250.0,
+  "duration": 17880.0,
+  "elapsedDuration": 18000.0,
+  "averageSpeed": 1.75,
+  "maxSpeed": 18.3,
+  "averageHR": 112,
+  "maxHR": 158,
+  "calories": 1210,
+  "elevationGain": 2540.0,
+  "elevationLoss": 2566.0,
+  "lapCount": 1
+ },
+ {
+  "activityId": 9000000101,
+  "activityName": "City Running",
+  "activityType": {
+   "typeKey": "running",
+   "typeId": 1
+  },
+  "startTimeLocal": "2026-01-08 17:30:05",
+  "startTimeGMT": "2026-01-08 17:30:05",
+  "distance": 6437.4,
+  "duration": 2010.0,
+  "elapsedDuration": 2130.0,
+  "averageSpeed": 3.203,
+  "maxSpeed": 4.1,
+  "averageHR": 146,
+  "maxHR": 166,
+  "calories": 430,
+  "elevationGain": 38.0,
+  "elevationLoss": 36.0,
+  "lapCount": 4
+ }
+]

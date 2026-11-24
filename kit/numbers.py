@@ -7,10 +7,15 @@ Every number the recaps show, worked out in code. Claude gets these and only wri
 Values are already formatted in the person's units ("5.02 mi", "10:42 pm"), so Claude never
 converts or rounds. Missing data means the key is absent, never a guessed number.
 `plan` is always None in v1: the hook a training-plan module would fill.
+
+Only metrics switched on in profile.toml [metrics] are built (kit/metrics.py names them). A
+metric that's on but has no data is simply left out: a sparse account still gets a short recap.
 """
 import re
 from datetime import date, datetime, timedelta, timezone
 
+from kit import metrics
+from kit.metrics import num as _num
 from kit.profile import clock, dist, elev, hours_minutes, pace, speed, time12
 
 SNOW = ("resort_snowboarding", "resort_skiing_snowboarding_ws", "resort_skiing", "backcountry_snowboarding",
@@ -30,11 +35,6 @@ NOON = 12 * 60
 def _rec(data, d, kind):
     r = ((data.get("days") or {}).get(d) or {}).get(kind) or {}
     return {} if "error" in r else r
-
-
-def _num(v):
-    """Garmin writes -1/-2 when it didn't have enough data. Those are missing, not numbers."""
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else None
 
 
 def _avg(vals):
@@ -136,9 +136,17 @@ def start_text(a):
     return f"{t.strftime('%a')} {time12(t.hour * 60 + t.minute)}"
 
 
-def activity(a, units):
+def zones_text(z):
+    total = sum(z)
+    pct = lambda x: round(100 * x / total)
+    return f"Z1-2 {pct(z[0] + z[1])}% · Z3 {pct(z[2])}% · Z4-5 {pct(z[3] + z[4])}%"
+
+
+def activity(a, units, on=None, detail=False):
     """One activity's numbers, formatted. Snow days: vertical is the descent (the climb is the
-    lift), top speed is maxSpeed."""
+    lift), top speed is maxSpeed. detail=True (cards) adds zones, training effect and load, each
+    only when its metric is on and the activity has it."""
+    on = set(metrics.NAMES) if on is None else on
     key = a.get("typeKey") or ""
     out = {"name": a.get("activityName") or sport(a), "sport": sport(a), "start": start_text(a)}
     if (a.get("distance") or 0) > 0:
@@ -162,6 +170,16 @@ def activity(a, units):
             out["runs"] = ride_runs(a)
     elif a.get("elevationGain"):
         out["climb"] = elev(a["elevationGain"], units)
+    if detail:
+        z = metrics.hr_zones(a) if "hr_zones" in on else None
+        if z:
+            out["zones"] = zones_text(z)
+        if "training_effect" in on and metrics.training_effect(a) is not None:
+            out["effect"] = f"{a.get('aerobicTrainingEffect') or 0:.1f} aerobic / {a.get('anaerobicTrainingEffect') or 0:.1f} anaerobic"
+        if "training_load" in on and metrics.training_load(a) is not None:
+            out["load"] = round(a["activityTrainingLoad"])
+        if "vo2max" in on and metrics.vo2max(a) is not None:
+            out["vo2max"] = round(a["vO2MaxValue"])
     return out
 
 
@@ -203,33 +221,46 @@ def _header(p, today):
 
 
 def sleep_block(data, p, today, days=7):
-    """Last night plus the 7-night averages and the distance from the target bed time."""
+    """Last night plus the 7-night averages and the distance from the target bed time, and the
+    sleep extras (score, stages, breathing, SpO2) that are switched on and present."""
+    on = metrics.enabled(p)
     t = today.isoformat()
     rec = _rec(data, t, "sleep")
-    last = night(rec)
-    nights = [night(_rec(data, (today - timedelta(days=i)).isoformat(), "sleep")) for i in range(days)]
-    nights = [n for n in nights if n]
+    day = {"sleep": rec, "summary": _rec(data, t, "summary")}
     out = {}
-    if last:
-        out.update(bed=time12(last["bed"]), wake=time12(last["wake"]), hours=last["hours"])
-    score = ((rec.get("sleepScores") or {}).get("overall") or {}).get("value")
-    out["score"] = _num(score)
-    if nights:
-        out["avg_hours_7"] = round(_avg([n["hours"] for n in nights]), 1)
-        out["avg_bed_7"] = time12(round(_avg([night_mins(n["bed"]) for n in nights])))
-        out["nights_in_avg"] = len(nights)
-    target = p["recap"].get("sleep_target_bed")
-    if target:
-        out["target_bed"] = time12(hhmm(target))
+    if "sleep" in on:
+        last = night(rec)
+        nights = [night(_rec(data, (today - timedelta(days=i)).isoformat(), "sleep")) for i in range(days)]
+        nights = [n for n in nights if n]
         if last:
-            diff = minutes_vs_target(last["bed"], hhmm(target))
-            out["vs_target"] = vs_target_text(diff)
-            out["minutes_vs_target"] = diff
+            out.update(bed=time12(last["bed"]), wake=time12(last["wake"]), hours=last["hours"])
+        if nights:
+            out["avg_hours_7"] = round(_avg([n["hours"] for n in nights]), 1)
+            out["avg_bed_7"] = time12(round(_avg([night_mins(n["bed"]) for n in nights])))
+            out["nights_in_avg"] = len(nights)
+        target = p["recap"].get("sleep_target_bed")
+        if target:
+            out["target_bed"] = time12(hhmm(target))
+            if last:
+                diff = minutes_vs_target(last["bed"], hhmm(target))
+                out["vs_target"] = vs_target_text(diff)
+                out["minutes_vs_target"] = diff
+    if "sleep_score" in on:
+        out["score"] = metrics.sleep_score(day)
+    if "sleep_stages" in on and metrics.sleep_stages(day):
+        out["stages"] = {k: hours_minutes(v) for k, v in metrics.sleep_stages(day).items() if v}
+    if "respiration" in on:
+        r = metrics.respiration(day)
+        out["breathing_per_min"] = round(r, 1) if r is not None else None
+    if "spo2" in on:
+        o = metrics.spo2(day)
+        out["spo2_pct"] = round(o) if o is not None else None
     return out
 
 
 def morning(data, p, today, weather=None):
     data = data or {}
+    on = metrics.enabled(p)
     t, y = today.isoformat(), (today - timedelta(days=1)).isoformat()
     week_days = [(today - timedelta(days=i)).isoformat() for i in range(7)]
     ctx = _header(p, today)
@@ -237,28 +268,37 @@ def morning(data, p, today, weather=None):
         ctx["garmin"] = "unavailable today"
     ctx["sleep"] = sleep_block(data, p, today)
 
-    hrv = _rec(data, t, "hrv").get("hrvSummary") or {}
-    base = hrv.get("baseline") or {}
-    hrv_7 = _avg([_num((_rec(data, d, "hrv").get("hrvSummary") or {}).get("lastNightAvg")) for d in week_days])
-    ctx["hrv"] = {"last_night_ms": _num(hrv.get("lastNightAvg")),
-                  "avg_7_ms": round(hrv_7) if hrv_7 is not None else None,
-                  "garmin_status": (hrv.get("status") or "").replace("_", " ").lower() or None,
-                  "baseline_ms": f"{base['balancedLow']}-{base['balancedUpper']}"
-                  if base.get("balancedLow") and base.get("balancedUpper") else None}
+    if "hrv" in on:
+        hrv = _rec(data, t, "hrv").get("hrvSummary") or {}
+        base = hrv.get("baseline") or {}
+        hrv_7 = _avg([_num((_rec(data, d, "hrv").get("hrvSummary") or {}).get("lastNightAvg")) for d in week_days])
+        ctx["hrv"] = {"last_night_ms": _num(hrv.get("lastNightAvg")),
+                      "avg_7_ms": round(hrv_7) if hrv_7 is not None else None,
+                      "garmin_status": (hrv.get("status") or "").replace("_", " ").lower() or None,
+                      "baseline_ms": f"{base['balancedLow']}-{base['balancedUpper']}"
+                      if base.get("balancedLow") and base.get("balancedUpper") else None}
 
     today_sum, y_sum = _rec(data, t, "summary"), _rec(data, y, "summary")
-    rhr_7 = _avg([_num(_rec(data, d, "summary").get("restingHeartRate")) for d in week_days])
-    ctx["resting_hr"] = {"today": _num(today_sum.get("restingHeartRate")),
-                         "avg_7": round(rhr_7) if rhr_7 is not None else None}
-    ctx["body_battery"] = {"at_wake": _num(today_sum.get("bodyBatteryAtWakeTime")),
-                           "high_yesterday": _num(y_sum.get("bodyBatteryHighestValue")),
-                           "low_yesterday": _num(y_sum.get("bodyBatteryLowestValue"))}
-    ctx["stress_avg_yesterday"] = _num(y_sum.get("averageStressLevel"))
-    steps = _num(y_sum.get("totalSteps"))
-    ctx["steps_yesterday"] = f"{steps:,}" if steps is not None else None
+    if "resting_hr" in on:
+        rhr_7 = _avg([_num(_rec(data, d, "summary").get("restingHeartRate")) for d in week_days])
+        ctx["resting_hr"] = {"today": _num(today_sum.get("restingHeartRate")),
+                             "avg_7": round(rhr_7) if rhr_7 is not None else None}
+    if "body_battery" in on:
+        ctx["body_battery"] = {"at_wake": _num(today_sum.get("bodyBatteryAtWakeTime")),
+                               "high_yesterday": _num(y_sum.get("bodyBatteryHighestValue")),
+                               "low_yesterday": _num(y_sum.get("bodyBatteryLowestValue"))}
+    if "stress" in on:
+        ctx["stress_avg_yesterday"] = _num(y_sum.get("averageStressLevel"))
+    if "steps" in on:
+        steps = _num(y_sum.get("totalSteps"))
+        ctx["steps_yesterday"] = f"{steps:,}" if steps is not None else None
 
     acts = activities(data)
-    ctx["yesterday_activities"] = [activity(a, p["units"]) for a in acts if day_of(a) == y]
+    ctx["yesterday_activities"] = [activity(a, p["units"], on) for a in acts if day_of(a) == y]
+    if "vo2max" in on:
+        latest = [a for a in acts if metrics.vo2max(a) is not None]
+        if latest:
+            ctx["vo2max"] = round(latest[-1]["vO2MaxValue"])      # acts are oldest first: the newest reading
     if isinstance(data.get("activities"), list):
         ctx["week"] = week_totals(acts, today, p)
     if weather and weather.get("today"):
@@ -268,18 +308,20 @@ def morning(data, p, today, weather=None):
 
 def evening(data, p, today, weather=None):
     data = data or {}
+    on = metrics.enabled(p)
     t = today.isoformat()
     ctx = _header(p, today)
     if not data:
         ctx["garmin"] = "unavailable today"
     acts = activities(data)
-    ctx["today_activities"] = [activity(a, p["units"]) for a in acts if day_of(a) == t]
-    steps = _num(_rec(data, t, "summary").get("totalSteps"))
-    ctx["steps_today"] = f"{steps:,}" if steps is not None else None
+    ctx["today_activities"] = [activity(a, p["units"], on) for a in acts if day_of(a) == t]
+    if "steps" in on:
+        steps = _num(_rec(data, t, "summary").get("totalSteps"))
+        ctx["steps_today"] = f"{steps:,}" if steps is not None else None
     if isinstance(data.get("activities"), list):
         ctx["week"] = week_totals(acts, today, p)
     if weather and weather.get("tomorrow"):
         ctx["weather_tomorrow"] = {**weather["tomorrow"], "place": weather.get("place")}
-    if p["recap"].get("sleep_target_bed"):
+    if "sleep" in on and p["recap"].get("sleep_target_bed"):
         ctx["sleep_target_bed"] = time12(hhmm(p["recap"]["sleep_target_bed"]))
     return prune(ctx)

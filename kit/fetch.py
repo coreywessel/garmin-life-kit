@@ -17,7 +17,7 @@ ACTIVITY_KEYS = ("activityId", "activityName", "startTimeLocal", "distance", "du
                  "maxHR", "averageSpeed", "calories", "aerobicTrainingEffect", "anaerobicTrainingEffect",
                  "activityTrainingLoad", "elevationGain", "elevationLoss", "maxSpeed",
                  "hrTimeInZone_1", "hrTimeInZone_2", "hrTimeInZone_3", "hrTimeInZone_4", "hrTimeInZone_5",
-                 "lapCount")
+                 "lapCount", "vO2MaxValue")
 FATAL = (KeyRejected, RateLimited, ExchangeFailed)
 
 

@@ -18,6 +18,8 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from kit.metrics import NAMES as METRIC_NAMES
+
 ROOT = Path(__file__).resolve().parent.parent
 PROFILE = ROOT / "profile.toml"
 SETUP = ROOT / "setup.json"
@@ -34,6 +36,7 @@ DEMO = {
     "features": {"morning_recap": True, "evening_recap": True, "activity_cards": True,
                  "weather": True, "log_notes": True, "watchdog": True},
     "recap": {"sleep_target_bed": "22:30", "about": "I snowboard most weekends in winter."},
+    "devices": {"wears": "a Garmin watch"},
 }
 # Fake ids so a dry run can go through every send path with no setup.json.
 FAKE_SETUP = {
@@ -91,10 +94,24 @@ def validate(p):
             errs.append(f"location.lon {lon} must be between -180 and 180. {FIX}")
     except (TypeError, ValueError):
         errs.append(f"location.lat and location.lon must be numbers. {FIX}")
+    metrics = p.get("metrics") or {}
+    if not isinstance(metrics, dict):
+        errs.append(f"[metrics] must be a section of name = true / false lines. {FIX}")
+        metrics = {}
+    for k, v in metrics.items():
+        if k in METRIC_NAMES and not isinstance(v, bool):
+            errs.append(f"metrics.{k} must be true or false, not {v!r}. {FIX}")
     bed = str((p.get("recap") or {}).get("sleep_target_bed", "") or "")
     if bed and not HHMM.match(bed):
         errs.append(f'recap.sleep_target_bed "{bed}" must be empty or 24h "HH:MM", like "22:30". {FIX}')
     return errs
+
+
+def unknown_metrics(p):
+    """Names under [metrics] the kit doesn't know. Only a warning: after an update renames or drops
+    a metric, an old name must never stop the recaps."""
+    m = p.get("metrics")
+    return sorted(set(m) - set(METRIC_NAMES)) if isinstance(m, dict) else []
 
 
 def _defaults(p):
@@ -104,6 +121,9 @@ def _defaults(p):
     p["features"] = {**{f: True for f in FEATURES}, **(p.get("features") or {})}
     p["recap"] = {"sleep_target_bed": "", "about": "", **(p.get("recap") or {})}
     p["recap"]["about"] = (p["recap"]["about"] or "").strip()
+    p["devices"] = {"wears": "", **(p.get("devices") or {})}
+    # A missing [metrics] section or key means on, so profiles from before v0.2 keep working.
+    p["metrics"] = {n: (p.get("metrics") or {}).get(n, True) for n in METRIC_NAMES}
     return p
 
 
@@ -132,6 +152,10 @@ def load(path=None):
             raise ProfileError("\n".join(f"profile.toml: {e}" for e in errs))
         print("dry run: profile.toml isn't filled in yet, using the demo profile", file=sys.stderr)
         raw = DEMO
+    unknown = unknown_metrics(raw)
+    if unknown:
+        print(f"WARNING: profile.toml [metrics] has unknown name(s) {', '.join(unknown)} - ignored. "
+              f"Valid names: {', '.join(METRIC_NAMES)}.", file=sys.stderr)
     p = _defaults(raw)
     if stamp:
         _cache[stamp] = p

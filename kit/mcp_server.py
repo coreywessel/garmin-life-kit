@@ -26,7 +26,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from kit import fetch, garmin, numbers, profile
+from kit import fetch, garmin, metrics, numbers, profile
 
 MAX_LIST = 12
 NOISE = re.compile(r"(?i)(gmt|uuid|^userprofilepk$|^ownerid$|^ownerdisplayname$|^userid$|privacy|version)")
@@ -133,6 +133,15 @@ def units():
     return (owner_profile() or {}).get("units", "metric")
 
 
+def on():
+    """Metrics switched on in profile.toml [metrics]. No profile = all on."""
+    return metrics.enabled(owner_profile())
+
+
+def off_note(name):
+    return {"note": f"{name} is switched off in profile.toml [metrics]"}
+
+
 def answer(fn, *args):
     """Run a Garmin call and return JSON text. Garmin errors become a ToolError, whose plain-words
     message (with the fix) is what the client sees."""
@@ -148,10 +157,14 @@ def get_sleep(date: str = "") -> str:
     wake time, hours, sleep score, stage seconds, breathing."""
     d = day(date)
 
+    enabled = on()
+    if not enabled & {"sleep", "sleep_score", "sleep_stages", "respiration", "spo2"}:
+        return json.dumps({"date": d.isoformat(), **off_note("sleep")})
+
     def go():
         rec = client().sleep(d)
-        n = numbers.night(rec)
-        out = {"date": d.isoformat(), "record": trim(rec)}
+        n = numbers.night(rec) if "sleep" in enabled else None
+        out = {"date": d.isoformat(), "record": metrics.strip_off(trim(rec), enabled)}
         if n:
             out["summary"] = {"bed": profile.time12(n["bed"]), "wake": profile.time12(n["wake"]), "hours": n["hours"]}
         return out
@@ -163,6 +176,8 @@ def get_hrv(date: str = "") -> str:
     """Overnight HRV for `date` (YYYY-MM-DD, default today): last-night average, weekly average,
     Garmin's status and baseline."""
     d = day(date)
+    if "hrv" not in on():
+        return json.dumps({"date": d.isoformat(), **off_note("hrv")})
     return answer(lambda: {"date": d.isoformat(), **trim(client().hrv(d))})
 
 
@@ -171,7 +186,8 @@ def get_daily_summary(date: str = "") -> str:
     """Garmin's daily summary for `date` (YYYY-MM-DD, default today): steps, resting HR, stress,
     Body Battery, calories, distance."""
     d = day(date)
-    return answer(lambda: {"date": d.isoformat(), **trim(client().daily_summary(d))})
+    enabled = on()
+    return answer(lambda: {"date": d.isoformat(), **metrics.strip_off(trim(client().daily_summary(d)), enabled)})
 
 
 @server.tool()
@@ -184,9 +200,12 @@ def list_activities(start: str = "", end: str = "") -> str:
     if (e - s).days > 366:
         raise ToolError("ask for a year or less at a time")
 
+    enabled, u = on(), units()
+
     def go():
         acts = sorted((fetch.slim(a) for a in client().activities(s, e)), key=lambda a: a.get("startTimeLocal", ""))
-        return [{**a, "formatted": numbers.activity(a, units())} for a in acts]
+        return [metrics.strip_off({**a, "formatted": numbers.activity(a, u, enabled, detail=True)}, enabled)
+                for a in acts]
     return answer(go)
 
 
@@ -197,6 +216,7 @@ def weekly_rollup(week_start: str = "") -> str:
     p = owner_profile() or {"units": "metric", "week_starts": "monday"}
     start = day(week_start) if week_start else numbers.week_start(today(), p)
     end = start + timedelta(days=6)
+    enabled = metrics.enabled(p)
 
     def go():
         c = client()
@@ -213,11 +233,13 @@ def weekly_rollup(week_start: str = "") -> str:
             d = start + timedelta(days=i)
             if d > today():          # no point asking Garmin about days that haven't happened
                 break
-            n = numbers.night(c.sleep(d))
+            n = numbers.night(c.sleep(d)) if "sleep" in enabled else None
             if n:
                 hours.append(n["hours"])
-            hrv.append(numbers._num((c.hrv(d).get("hrvSummary") or {}).get("lastNightAvg")))
-            rhr.append(numbers._num(c.daily_summary(d).get("restingHeartRate")))
+            if "hrv" in enabled:
+                hrv.append(metrics.hrv({"hrv": c.hrv(d)}))
+            if "resting_hr" in enabled:
+                rhr.append(metrics.resting_hr({"summary": c.daily_summary(d)}))
         avg = lambda v: round(numbers._avg(v), 1) if numbers._avg(v) is not None else None
         return numbers.prune({
             "week_start": start.isoformat(), "week_end": end.isoformat(), "activities": len(acts),
@@ -225,7 +247,7 @@ def weekly_rollup(week_start: str = "") -> str:
             "by_sport": {k: {"count": v["count"], "time": profile.hours_minutes(v["seconds"]),
                              "distance": profile.dist(v["meters"], p["units"]) if v["meters"] else None}
                          for k, v in sorted(by_sport.items())},
-            "avg_sleep_hours": avg(hours), "nights_with_sleep": len(hours),
+            "avg_sleep_hours": avg(hours), "nights_with_sleep": len(hours) if "sleep" in enabled else None,
             "avg_hrv_ms": avg(hrv), "avg_resting_hr": avg(rhr)})
     return answer(go)
 

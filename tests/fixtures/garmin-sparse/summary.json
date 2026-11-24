@@ -1,0 +1,66 @@
+{
+ "2026-01-07": {
+  "calendarDate": "2026-01-07",
+  "totalSteps": 8120,
+  "dailyStepGoal": 9000,
+  "restingHeartRate": 53,
+  "totalDistanceMeters": 6333,
+  "activeKilocalories": 540
+ },
+ "2026-01-08": {
+  "calendarDate": "2026-01-08",
+  "totalSteps": 10450,
+  "dailyStepGoal": 9000,
+  "restingHeartRate": 54,
+  "totalDistanceMeters": 8151,
+  "activeKilocalories": 540
+ },
+ "2026-01-09": {
+  "calendarDate": "2026-01-09",
+  "totalSteps": 7300,
+  "dailyStepGoal": 9000,
+  "restingHeartRate": 52,
+  "totalDistanceMeters": 5694,
+  "activeKilocalories": 540
+ },
+ "2026-01-10": {
+  "calendarDate": "2026-01-10",
+  "totalSteps": 15200,
+  "dailyStepGoal": 9000,
+  "restingHeartRate": 55,
+  "totalDistanceMeters": 11856,
+  "activeKilocalories": 540
+ },
+ "2026-01-11": {
+  "calendarDate": "2026-01-11",
+  "totalSteps": 6900,
+  "dailyStepGoal": 9000,
+  "restingHeartRate": 53,
+  "totalDistanceMeters": 5382,
+  "activeKilocalories": 540
+ },
+ "2026-01-12": {
+  "calendarDate": "2026-01-12",
+  "totalSteps": 11800,
+  "dailyStepGoal": 9000,
+  "restingHeartRate": 52,
+  "totalDistanceMeters": 9204,
+  "activeKilocalories": 540
+ },
+ "2026-01-13": {
+  "calendarDate": "2026-01-13",
+  "totalSteps": 9450,
+  "dailyStepGoal": 9000,
+  "restingHeartRate": 52,
+  "totalDistanceMeters": 7371,
+  "activeKilocalories": 540
+ },
+ "2026-01-14": {
+  "calendarDate": "2026-01-14",
+  "totalSteps": 6210,
+  "dailyStepGoal": 9000,
+  "restingHeartRate": 51,
+  "totalDistanceMeters": 4843,
+  "activeKilocalories": 540
+ }
+}
