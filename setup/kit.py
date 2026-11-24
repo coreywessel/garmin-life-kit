@@ -400,7 +400,8 @@ def tg(token: str, method: str, **params) -> dict:
 
 
 def child_env() -> dict:
-    env = {**os.environ, "PYTHONUTF8": "1"}   # Windows consoles default to cp1252
+    env = {**os.environ, "PYTHONUTF8": "1",        # Windows consoles default to cp1252
+           "PYTHONDONTWRITEBYTECODE": "1"}       # checks on a merged tree never leave __pycache__ behind
     if ACCOUNT_ID:
         env["CLOUDFLARE_ACCOUNT_ID"] = ACCOUNT_ID
     return env
